@@ -4,23 +4,17 @@ import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
-import androidx.compose.foundation.layout.*
-import androidx.compose.material3.*
-import androidx.compose.runtime.*
-import androidx.compose.ui.Modifier
-import com.ioniq.ui.theme.IoniqTheme
+import androidx.lifecycle.ViewModelProvider
 import com.ioniq.ui.screens.HomeScreen
+import com.ioniq.ui.theme.IoniqTheme
 
 class MainActivity : ComponentActivity() {
+    private lateinit var viewModel: VehicleViewModel
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
-        setContent {
-            IoniqTheme {
-                Surface(modifier = Modifier.fillMaxSize()) {
-                    HomeScreen()
-                }
-            }
-        }
+        viewModel = ViewModelProvider(this, VehicleViewModel.factory(application as android.app.Application))[VehicleViewModel::class.java]
+        setContent { IoniqTheme { HomeScreen(viewModel = viewModel) } }
     }
 }
