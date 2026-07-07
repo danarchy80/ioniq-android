@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Ioniq EV</string>
+    <string name="service_notification_title">Ioniq Connected</string>
+    <string name="service_notification_text">Monitoring vehicle telemetry</string>
+    <string name="channel_name">Vehicle Monitor</string>
+    <string name="channel_description">Persistent notification for vehicle connection</string>
+</resources>

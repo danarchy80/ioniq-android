@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <color name="ioniq_blue">#FF003DA5</color>
+    <color name="ioniq_dark">#FF0A1929</color>
+    <color name="ioniq_accent">#FF00B4E6</color>
+    <color name="ioniq_green">#FF4CAF50</color>
+    <color name="ioniq_warning">#FFFFA000</color>
+</resources>
