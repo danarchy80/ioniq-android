@@ -15,13 +15,17 @@ data class VehicleTelemetry(
     val soh: Float? = null,                  // State of health %
     val batteryVoltage: Float? = null,       // Pack voltage V
     val batteryCurrent: Float? = null,       // Pack current A
-    val batteryTempMin: Float? = null,
-    val batteryTempMax: Float? = null,
-    val cellVoltageMin: Float? = null,
-    val cellVoltageMax: Float? = null,
+    val batteryTempMin: Float? = null,       // Battery temp min °C
+    val batteryTempMax: Float? = null,       // Battery temp max °C
+    val inletTemp: Float? = null,            // Charge inlet temp °C
+    val ambientTemp: Float? = null,          // Ambient temp °C
+    val cellVoltageMin: Int? = null,         // Min cell mV
+    val cellVoltageMax: Int? = null,         // Max cell mV
     val odometer: Float? = null,             // km
     val chargingState: ChargingState = ChargingState.NOT_CHARGING,
     val chargePower: Float? = null,          // kW
+    val cumulativeEnergyCharged: Float? = null,   // kWh
+    val cumulativeEnergyDischarged: Float? = null  // kWh
 )
 
 enum class ChargingState {

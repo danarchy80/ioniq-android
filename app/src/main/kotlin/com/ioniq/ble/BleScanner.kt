@@ -2,26 +2,42 @@ package com.ioniq.ble
 
 import android.bluetooth.BluetoothDevice
 import android.content.Context
-import android.os.Handler
-import android.os.Looper
 import kotlinx.coroutines.channels.awaitClose
-import kotlinx.coroutines.flow.Flow
-import kotlinx.coroutines.flow.callbackFlow
+import kotlinx.coroutines.flow.*
+import kotlinx.coroutines.launch
+import timber.log.Timber
 
 /**
  * BLE Scanner — discovers nearby ELM327 OBD-II adapters.
  *
- * Uses Android's native BluetoothLeScanner for simplicity and
- * compatibility across all Android versions 8.0+.
+ * Exposes a StateFlow<List<BluetoothDevice>> so the UI can observe
+ * discovered devices reactively.
  */
 class BleScanner(private val context: Context) {
 
+    private val _scanResults = MutableStateFlow<List<BluetoothDevice>>(emptyList())
+    val scanResults: StateFlow<List<BluetoothDevice>> = _scanResults.asStateFlow()
+
+    @Volatile private var isScanning = false
+
     @android.annotation.SuppressLint("MissingPermission")
-    fun scan(): Flow<BluetoothDevice> = callbackFlow {
+    fun startScan() {
+        if (isScanning) return
+        isScanning = true
+        _scanResults.value = emptyList()
+
+        val seen = mutableSetOf<String>()
+
         val manager = context.getSystemService(Context.BLUETOOTH_SERVICE)
             as android.bluetooth.BluetoothManager
-        val adapter = manager.adapter ?: run { close(); return@callbackFlow }
-        val scanner = adapter.bluetoothLeScanner ?: run { close(); return@callbackFlow }
+        val adapter = manager.adapter ?: run {
+            isScanning = false
+            return
+        }
+        val scanner = adapter.bluetoothLeScanner ?: run {
+            isScanning = false
+            return
+        }
 
         val callback = object : android.bluetooth.le.ScanCallback() {
             override fun onScanResult(callbackType: Int, result: android.bluetooth.le.ScanResult) {
@@ -32,26 +48,32 @@ class BleScanner(private val context: Context) {
                     name.contains("OBD", ignoreCase = true) ||
                     name.contains("Vgate", ignoreCase = true) ||
                     name.contains("VEEPEAK", ignoreCase = true))) {
-                    trySend(device)
+                    if (device.address !in seen) {
+                        seen.add(device.address)
+                        _scanResults.value = _scanResults.value + device
+                        Timber.d("Found BLE device: $name (${device.address})")
+                    }
                 }
             }
 
             override fun onScanFailed(errorCode: Int) {
-                close(RuntimeException("BLE scan failed with error code: $errorCode"))
+                Timber.e("BLE scan failed: errorCode=$errorCode")
+                isScanning = false
             }
         }
 
-        // Scan for all devices (filter in callback for ELM327 names)
         scanner.startScan(callback)
+        Timber.i("BLE scan started...")
 
-        val handler = Handler(Looper.getMainLooper())
-        handler.postDelayed({
-            scanner.stopScan(callback)
-            close()
-        }, 15_000L) // 15 second scan timeout
-
-        awaitClose {
+        // Auto-stop after 15 seconds
+        android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
             try { scanner.stopScan(callback) } catch (_: Exception) {}
-        }
+            isScanning = false
+            Timber.i("BLE scan stopped (${seen.size} devices found)")
+        }, 15_000L)
+    }
+
+    fun stopScan() {
+        isScanning = false
     }
 }

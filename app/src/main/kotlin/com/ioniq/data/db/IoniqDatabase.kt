@@ -9,7 +9,7 @@ import com.ioniq.data.model.VehicleTelemetry
 
 @Database(
     entities = [VehicleTelemetry::class, CellReading::class],
-    version = 1,
+    version = 2,
     exportSchema = false
 )
 abstract class IoniqDatabase : RoomDatabase() {
@@ -20,7 +20,7 @@ abstract class IoniqDatabase : RoomDatabase() {
     companion object {
         @Volatile private var INSTANCE: IoniqDatabase? = null
 
-        fun getInstance(context: Context): IoniqDatabase =
+        fun getDatabase(context: Context): IoniqDatabase =
             INSTANCE ?: synchronized(this) {
                 INSTANCE ?: Room.databaseBuilder(
                     context.applicationContext,

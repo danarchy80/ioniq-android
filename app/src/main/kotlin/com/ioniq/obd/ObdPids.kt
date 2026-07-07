@@ -4,7 +4,7 @@ package com.ioniq.obd
  * Ioniq 5 / Hyundai OBD-II PIDs commonly available over ELM327/CAN.
  *
  * Standard OBD mode 01 (current data) + manufacturer PIDs for
- * battery/EV-specific readings. Hyundai Ioniq 5 uses Mode 21/22
+ * battery/EV-specific readings. Hyundai Ioniq 5 uses Mode 22
  * (manufacturer-specific) for many EV parameters.
  *
  * Format: mode(2 hex) + pid(2-4 hex)
@@ -17,7 +17,7 @@ object ObdPids {
     const val COOLANT_TEMP     = "0105"
     const val INTAKE_AIR_TEMP  = "010F"
     const val VEHICLE_SPEED    = "010D"
-    const val BATTERY_VOLTAGE  = "0142"
+    const val BATTERY_VOLTAGE  = "0142"    // Standard OBD control module voltage
     const val RUNTIME          = "011F"
     const val CONTROL_MODULE_VOLTAGE = "0142"
 
@@ -52,8 +52,17 @@ object ObdPids {
     /** Max cell voltage */
     const val CELL_VOLTAGE_MAX = "22010F"
 
+    /** Individual cell voltages (array, multi-line response) */
+    const val CELL_VOLTAGES    = "220201"
+
     /** Battery temperatures (pack, module) */
     const val BATTERY_TEMP     = "220110"
+
+    /** Charging inlet temperature */
+    const val INLET_TEMP       = "220112"
+
+    /** Ambient temperature */
+    const val AMBIENT_TEMP     = "220113"
 
     /** Odometer */
     const val ODOMETER         = "22B002"
@@ -62,13 +71,19 @@ object ObdPids {
     const val CHARGING_STATE   = "220111"
 
     /** Charging power (kW) */
-    const val CHARGING_POWER   = "220112"
+    const val CHARGING_POWER   = "220114"
 
     /** Remaining charging time (minutes) — DC fast charge */
-    const val CHARGE_TIME_DC   = "220113"
+    const val CHARGE_TIME_DC   = "220115"
 
     /** Battery energy capacity (kWh) — total nominal */
     const val BATTERY_CAPACITY = "220109"
+
+    /** Cumulative energy charged (kWh) */
+    const val CUMULATIVE_ENERGY_CHARGED = "22B00A"
+
+    /** Cumulative energy discharged (kWh) */
+    const val CUMULATIVE_ENERGY_DISCHARGED = "22B00B"
 
     /**
      * Parse standard OBD hex response to readable value.

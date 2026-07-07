@@ -5,225 +5,221 @@ import android.content.Context
 import com.ioniq.ble.BleScanner
 import com.ioniq.ble.ElmBleManager
 import com.ioniq.data.db.IoniqDatabase
-import com.ioniq.data.model.ChargingState
+import com.ioniq.data.model.CellReading
 import com.ioniq.data.model.VehicleTelemetry
+import com.ioniq.ha.HomeAssistantClient
 import com.ioniq.obd.ObdParser
 import com.ioniq.obd.ObdPids
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.*
 import timber.log.Timber
-import java.util.concurrent.ConcurrentLinkedQueue
+import java.time.Instant
 
 /**
- * Central orchestrator: BLE → OBD commands → parser → Room DB → UI state.
+ * Central repository orchestrating:
+ *   BLE Scanner → ElmBleManager → OBD PID polling → Room DB → Home Assistant push
  *
- * Data flow:
- * 1. BleScanner discovers ELM327 devices
- * 2. ElmBleManager establishes GATT connection
- * 3. This class sends OBD commands and collects responses
- * 4. ObdParser converts hex bytes to engineering values
- * 5. VehicleTelemetry is assembled and written to Room
- * 6. StateFlow emits live data to the UI (ViewModel)
+ * Lifecycle: created by ViewModel or Service, call destroy() when done.
  */
 class VehicleRepository(private val context: Context) {
 
-    private val db = IoniqDatabase.getInstance(context)
-    private val dao = db.telemetryDao()
-    val bleManager = ElmBleManager(context)
-    private val bleScanner = BleScanner(context)
+    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    private val scanner = BleScanner(context)
+    private val elmManager = ElmBleManager(context)
+    private val db = IoniqDatabase.getDatabase(context)
+    private val telemetryDao = db.telemetryDao()
+    private val cellReadingDao = db.cellReadingDao()
+    // ObdParser is a Kotlin singleton object — call directly as ObdParser.method()
 
-    // Live vehicle state exposed to UI
+    // ---- Home Assistant client (lazy init with saved config) ----
+    private var haClient: HomeAssistantClient? = null
+
+    // ---- Exposed state ----
+    val scanResults: StateFlow<List<BluetoothDevice>> = scanner.scanResults
+    val connectionState: StateFlow<ElmBleManager.ConnectionState> = elmManager.connectionState
+    val isReconnecting: StateFlow<Boolean> = elmManager.isReconnecting
+    val reconnectAttempts: StateFlow<Int> = elmManager.reconnectCount
+
     private val _vehicleState = MutableStateFlow<VehicleTelemetry?>(null)
-    val vehicleState: Flow<VehicleTelemetry?> = _vehicleState.asStateFlow()
+    val vehicleState: StateFlow<VehicleTelemetry?> = _vehicleState.asStateFlow()
 
-    val connectionState = bleManager.connectionState
-    val scanResults = MutableStateFlow<List<BluetoothDevice>>(emptyList())
+    private var pollJob: Job? = null
 
-    // Response buffer: accumulates bytes until we get a complete response
-    private val responseBuffer = StringBuilder()
-    private var pendingPid: String? = null
-    private val responseCallbacks = ConcurrentLinkedQueue<(String) -> Unit>()
+    // ---- Scanning ----
+    fun startScan() = scanner.startScan()
+    fun stopScan() = scanner.stopScan()
 
-    private var pollingJob: Job? = null
-    private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
-
-    // PID polling sequence with interval weights
-    private val pidSequence = listOf(
-        ObdPids.SOC_DISPLAY to 2000L,                   // SOC every 2s
-        ObdPids.PACK_VOLTAGE to 2000L,                  // Pack voltage every 2s
-        ObdPids.PACK_CURRENT to 2000L,
-        ObdPids.BATTERY_TEMP to 5000L,                  // Temp every 5s
-        ObdPids.CELL_VOLTAGE_MIN to 5000L,
-        ObdPids.CELL_VOLTAGE_MAX to 5000L,
-        ObdPids.CHARGING_STATE to 5000L,
-        ObdPids.CHARGING_POWER to 3000L,
-        ObdPids.SOH to 10000L,                          // SOH every 10s
-        ObdPids.ODOMETER to 10000L,
-        ObdPids.DC_BUS_VOLTAGE to 5000L,
-        ObdPids.DC_BUS_CURRENT to 5000L,
-    ).map { PidRequest(it.first, it.second) }
-
-    private data class PidRequest(val pid: String, val intervalMs: Long)
-
-    // Most recent parsed values (for assembling telemetry snapshots)
-    private val latestValues = mutableMapOf<String, Float?>()
-
-    /**
-     * Start BLE scanning for ELM327 adapters.
-     */
-    fun startScan() {
-        scope.launch {
-            val devices = mutableListOf<BluetoothDevice>()
-            bleScanner.scan().collect { device ->
-                if (devices.none { it.address == device.address }) {
-                    devices.add(device)
-                    scanResults.value = devices.toList()
-                }
-            }
-        }
-    }
-
-    /**
-     * Connect to a discovered ELM327 device and begin data flow.
-     */
+    // ---- Connection ----
     fun connect(device: BluetoothDevice) {
-        bleManager.connect(device)
+        elmManager.connectToDevice(device)
 
-        // Listen for raw BLE data and feed into response parser
-        scope.launch {
-            bleManager.rawData.collect { data ->
-                data?.let { handleRawBytes(it) }
+        // Start polling when connected
+        connectionState
+            .filter { it == ElmBleManager.ConnectionState.CONNECTED }
+            .take(1)
+            .onEach { startPolling() }
+            .launchIn(scope)
+
+        // Stop polling when disconnected
+        connectionState
+            .filter { it == ElmBleManager.ConnectionState.DISCONNECTED }
+            .onEach {
+                pollJob?.cancel()
+                pollJob = null
             }
-        }
-
-        // When connected, run init sequence then start polling
-        scope.launch {
-            bleManager.connectionState
-                .filter { it == ElmBleManager.ConnectionState.CONNECTED }
-                .first()
-
-            Timber.i("BLE connected, initializing ELM327...")
-            initializeElm327()
-            startPidPolling()
-        }
+            .launchIn(scope)
     }
 
-    /**
-     * Send ELM327 initialization commands sequentially.
-     */
-    private suspend fun initializeElm327() {
-        for (cmd in ObdParser.initializationCommands()) {
-            val response = sendCommandAndWait(cmd, timeoutMs = 3000)
-            Timber.d("ELM init: $cmd → $response")
-            delay(200) // Brief pause between init commands
-        }
+    fun disconnect() {
+        elmManager.disconnect()
+        pollJob?.cancel()
+        pollJob = null
     }
 
-    /**
-     * Start the periodic PID polling loop.
-     */
-    private fun startPidPolling() {
-        pollingJob?.cancel()
-        pollingJob = scope.launch {
-            while (isActive) {
-                for (request in pidSequence) {
-                    if (!isActive) break
+    // ---- PID Polling Loop ----
+    private fun startPolling() {
+        pollJob?.cancel()
+        pollJob = scope.launch {
+            Timber.i("Starting OBD-II PID polling loop")
 
-                    val response = sendCommandAndWait(request.pid, timeoutMs = 2000)
-                    if (response != null) {
-                        val parsed = ObdParser.parseResponse(request.pid, response)
-                        if (parsed.value != null) {
-                            latestValues[request.pid] = parsed.value
-                        }
+            // Connect HA client if config available
+            initHaClient()
+
+            // Rapid poll: SOC, voltage, current, temps (every 2s)
+            val rapidPids = listOf(
+                ObdPids.SOC_DISPLAY,
+                ObdPids.PACK_VOLTAGE,
+                ObdPids.PACK_CURRENT,
+                ObdPids.BATTERY_TEMP,
+                ObdPids.INLET_TEMP,
+                ObdPids.AMBIENT_TEMP,
+                ObdPids.CHARGING_STATE
+            )
+
+            // Slow poll: cumulative energy stats (every 10s)
+            var slowTick = 0
+
+            while (isActive && connectionState.value == ElmBleManager.ConnectionState.CONNECTED) {
+
+                val now = Instant.now().toEpochMilli()
+                val soc = elmManager.readPid(ObdPids.SOC_DISPLAY)?.let { ObdParser.parseSoc(it) }
+                val voltage = elmManager.readPid(ObdPids.PACK_VOLTAGE)?.let { ObdParser.parseBatteryVoltage(it) }
+                val current = elmManager.readPid(ObdPids.PACK_CURRENT)?.let { ObdParser.parseBatteryCurrent(it) }
+                val battTempMax = elmManager.readPid(ObdPids.BATTERY_TEMP)?.let {
+                    ObdParser.parseBatteryTemp(it).maxOrNull()
+                }
+                val inletTemp = elmManager.readPid(ObdPids.INLET_TEMP)?.let { ObdParser.parseInletTemp(it) }
+                val ambientTemp = elmManager.readPid(ObdPids.AMBIENT_TEMP)?.let { ObdParser.parseAmbientTemp(it) }
+                val chargingState = elmManager.readPid(ObdPids.CHARGING_STATE)?.let { ObdParser.parseChargingState(it) } ?: com.ioniq.data.model.ChargingState.NOT_CHARGING
+
+                // Slow-poll fields every 5th cycle
+                var cumCharge: Float? = null
+                var cumDischarge: Float? = null
+                var cellMin: Int? = null
+                var cellMax: Int? = null
+                var cellVoltages: List<CellReading>? = null
+
+                if (slowTick % 5 == 0) {
+                    cumCharge = elmManager.readPid(ObdPids.CUMULATIVE_ENERGY_CHARGED)?.let {
+                        ObdParser.parseCumulativeEnergy(it)
                     }
-
-                    // Assemble and emit telemetry snapshot every cycle
-                    assembleAndEmitTelemetry()
-
-                    delay(request.intervalMs.coerceAtMost(2000))
+                    cumDischarge = elmManager.readPid(ObdPids.CUMULATIVE_ENERGY_DISCHARGED)?.let {
+                        ObdParser.parseCumulativeEnergy(it)
+                    }
+                    val cellData = elmManager.readPid(ObdPids.CELL_VOLTAGES)?.let {
+                        ObdParser.parseCellVoltages(now, 0, it)
+                    }
+                    cellVoltages = cellData
+                    cellMin = cellData?.minOfOrNull { it.voltage }?.toInt()
+                    cellMax = cellData?.maxOfOrNull { it.voltage }?.toInt()
                 }
-            }
-        }
-    }
 
-    /**
-     * Send an OBD command and suspend until we get a response.
-     */
-    private suspend fun sendCommandAndWait(command: String, timeoutMs: Long): String? {
-        return withTimeoutOrNull(timeoutMs) {
-            suspendCancellableCoroutine { cont ->
-                pendingPid = command
-                responseCallbacks.add { response ->
-                    if (cont.isActive) cont.resume(response, null)
+                val telemetry = VehicleTelemetry(
+                    id = 0,
+                    timestamp = now,
+                    soc = soc,
+                    batteryVoltage = voltage,
+                    batteryCurrent = current,
+                    batteryTempMax = battTempMax,
+                    inletTemp = inletTemp,
+                    ambientTemp = ambientTemp,
+                    chargingState = chargingState,
+                    cumulativeEnergyCharged = cumCharge,
+                    cumulativeEnergyDischarged = cumDischarge,
+                    cellVoltageMin = cellMin,
+                    cellVoltageMax = cellMax
+                )
+
+                // Persist to Room
+                val rowId = telemetryDao.insert(telemetry)
+                cellVoltages?.forEach { cell ->
+                    cellReadingDao.insert(cell.copy(telemetryId = rowId))
                 }
-                bleManager.sendCommand(command)
+
+                _vehicleState.value = telemetry
+
+                // Push to Home Assistant
+                haClient?.pushTelemetry(telemetry)
+
+                slowTick++
+
+                // Poll interval: 2s between cycles
+                delay(2000L)
             }
+
+            Timber.i("Polling loop ended")
+        }
+    }
+
+    // ---- Home Assistant Integration ----
+
+    private fun initHaClient() {
+        val prefs = context.getSharedPreferences("ha_config", Context.MODE_PRIVATE)
+        val url = prefs.getString("ha_ws_url", null) ?: return
+        val token = prefs.getString("ha_token", null) ?: return
+
+        if (haClient != null) return // already connected
+
+        haClient = HomeAssistantClient(url, token).also { client ->
+            client.connect()
+            // Log HA state changes
+            client.state
+                .onEach { Timber.d("HA state: $it") }
+                .launchIn(scope)
         }
     }
 
     /**
-     * Process raw BLE bytes → accumulate ASCII response → fire callbacks.
+     * Configure Home Assistant connection (called from Settings screen).
      */
-    private fun handleRawBytes(data: ByteArray) {
-        val text = String(data, Charsets.US_ASCII)
-        responseBuffer.append(text)
+    fun configureHomeAssistant(wsUrl: String, token: String) {
+        val prefs = context.getSharedPreferences("ha_config", Context.MODE_PRIVATE)
+        prefs.edit()
+            .putString("ha_ws_url", wsUrl)
+            .putString("ha_token", token)
+            .apply()
 
-        // ELM327 signals end of response with ">" prompt or "\r\r>"
-        if (responseBuffer.contains(">")) {
-            val fullResponse = responseBuffer.toString().substringBefore(">")
-            responseBuffer.clear()
-
-            val callback = responseCallbacks.poll()
-            callback?.invoke(fullResponse.trim())
-        }
+        haClient?.release()
+        haClient = null
+        initHaClient()
     }
 
-    /**
-     * Assemble latest parsed values into a VehicleTelemetry and emit.
-     */
-    private fun assembleAndEmitTelemetry() {
-        val telemetry = VehicleTelemetry(
-            soc = latestValues[ObdPids.SOC_DISPLAY],
-            soh = latestValues[ObdPids.SOH],
-            batteryVoltage = latestValues[ObdPids.PACK_VOLTAGE],
-            batteryCurrent = latestValues[ObdPids.PACK_CURRENT],
-            batteryTempMin = latestValues[ObdPids.BATTERY_TEMP],
-            batteryTempMax = latestValues[ObdPids.BATTERY_TEMP],
-            cellVoltageMin = latestValues[ObdPids.CELL_VOLTAGE_MIN],
-            cellVoltageMax = latestValues[ObdPids.CELL_VOLTAGE_MAX],
-            odometer = latestValues[ObdPids.ODOMETER],
-            chargingState = when (latestValues[ObdPids.CHARGING_STATE]?.toInt()) {
-                1 -> ChargingState.CHARGING_AC
-                2 -> ChargingState.CHARGING_DC
-                3 -> ChargingState.CHARGING_COMPLETE
-                else -> ChargingState.NOT_CHARGING
-            },
-            chargePower = latestValues[ObdPids.CHARGING_POWER]
-        )
-
-        _vehicleState.value = telemetry
-
-        // Persist to Room (async, fire-and-forget)
-        scope.launch {
-            try {
-                dao.insertTelemetry(telemetry)
-            } catch (e: Exception) {
-                Timber.e(e, "Failed to persist telemetry")
-            }
-        }
+    fun disconnectHomeAssistant() {
+        haClient?.release()
+        haClient = null
+        context.getSharedPreferences("ha_config", Context.MODE_PRIVATE).edit().clear().apply()
     }
 
-    /**
-     * Get historical telemetry for charting.
-     */
-    fun getHistory(sinceMs: Long) = dao.getTelemetryHistory(sinceMs)
+    val haState: StateFlow<HomeAssistantClient.HaState>
+        get() = haClient?.state ?: MutableStateFlow(HomeAssistantClient.HaState.DISCONNECTED)
 
-    /**
-     * Clean up all resources.
-     */
+    // ---- Lifecycle ----
+
     fun destroy() {
-        pollingJob?.cancel()
+        pollJob?.cancel()
+        scanner.stopScan()
+        elmManager.release()
+        haClient?.release()
         scope.cancel()
-        bleManager.disconnect()
     }
 }
