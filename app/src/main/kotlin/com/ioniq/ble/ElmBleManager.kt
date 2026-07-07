@@ -5,102 +5,94 @@ import android.content.Context
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
-import no.nordicsemi.android.ble.BleManager
-import no.nordicsemi.android.ble.BleManagerCallbacks
-import timber.log.Timber
 
 /**
- * Manages BLE connection to an ELM327 OBD-II adapter using
- * Nordic Semiconductor's BLE library (industry-standard on Android).
+ * ELM327 BLE Manager — handles connection to OBD-II Bluetooth adapter.
  *
- * Lifecycle:
- *   scan() -> connect(device) -> sendAT("ATR") -> readOBD("0105") -> disconnect()
+ * Uses Android's native BluetoothGatt API for maximum compatibility.
+ * Nordic library APIs change frequently across versions; raw GATT is stable.
  */
-class ElmBleManager(context: Context) :
-    BleManager<ElmBleManager.ElmCallbacks>(context),
-    ElmBleManager.ElmCallbacks {
-
-    interface ElmCallbacks : BleManagerCallbacks {
-        fun onDataReceived(data: String)
-    }
+class ElmBleManager(private val context: Context) {
 
     private val _connectionState = MutableStateFlow(ConnectionState.DISCONNECTED)
     val connectionState: Flow<ConnectionState> = _connectionState.asStateFlow()
 
-    private val _obdData = MutableStateFlow<String?>(null)
-    val obdData: Flow<String?> = _obdData.asStateFlow()
+    private val _rawData = MutableStateFlow<ByteArray?>(null)
+    val rawData: Flow<ByteArray?> = _rawData.asStateFlow()
 
-    private var rxCharacteristic: android.bluetooth.BluetoothGattCharacteristic? = null
-    private var txCharacteristic: android.bluetooth.BluetoothGattCharacteristic? = null
+    private var gatt: android.bluetooth.BluetoothGatt? = null
 
-    override fun log(priority: Int, message: String) =
-        Timber.log(priority, message)
-
-    override fun getMinLogPriority(): Int = android.util.Log.DEBUG
-
-    override fun onDataReceived(data: String) {
-        _obdData.value = data
+    // ELM327 service/characteristic UUIDs (standard HM-10 / AT-09 adapters)
+    companion object {
+        val SERVICE_UUID: java.util.UUID =
+            java.util.UUID.fromString("0000ffe0-0000-1000-8000-00805f9b34fb")
+        val TX_CHAR_UUID: java.util.UUID =
+            java.util.UUID.fromString("0000ffe1-0000-1000-8000-00805f9b34fb")
+        val RX_CHAR_UUID: java.util.UUID =
+            java.util.UUID.fromString("0000ffe1-0000-1000-8000-00805f9b34fb")
     }
 
-    override fun onDeviceConnecting(device: BluetoothDevice) {
+    enum class ConnectionState { DISCONNECTED, CONNECTING, CONNECTED, DISCONNECTING }
+
+    @android.annotation.SuppressLint("MissingPermission")
+    fun connect(device: BluetoothDevice) {
         _connectionState.value = ConnectionState.CONNECTING
+        gatt = device.connectGatt(context, false, gattCallback)
     }
 
-    override fun onDeviceConnected(device: BluetoothDevice) {
-        _connectionState.value = ConnectionState.CONNECTING
-    }
-
-    override fun onDeviceReady(device: BluetoothDevice) {
-        _connectionState.value = ConnectionState.CONNECTED
-        Timber.i("ELM327 ready: ${device.name ?: device.address}")
-    }
-
-    override fun onDeviceDisconnecting(device: BluetoothDevice) {
+    @android.annotation.SuppressLint("MissingPermission")
+    fun disconnect() {
         _connectionState.value = ConnectionState.DISCONNECTING
-    }
-
-    override fun onDeviceDisconnected(device: BluetoothDevice) {
+        gatt?.disconnect()
+        gatt?.close()
+        gatt = null
         _connectionState.value = ConnectionState.DISCONNECTED
     }
 
-    fun initializeEcu() {
-        // Send standard ELM327 init commands
-        sendAT("ATZ")   // Reset
-        sendAT("ATE0")  // Echo off
-        sendAT("ATL0")  // Linefeeds off
-        sendAT("ATS0")  // Spaces off
-        sendAT("ATH1")  // Headers on
-        sendAT("ATSP6") // Protocol 6: ISO 15765-4 CAN (11/500)
+    @android.annotation.SuppressLint("MissingPermission")
+    fun sendCommand(command: String) {
+        val service = gatt?.getService(SERVICE_UUID) ?: return
+        val characteristic = service.getCharacteristic(TX_CHAR_UUID) ?: return
+        characteristic.value = (command + "\r").toByteArray()
+        gatt?.writeCharacteristic(characteristic)
     }
 
-    fun sendAT(command: String) {
-        request {
-            txCharacteristic?.let {
-                writeCharacteristic(it, (command + "\r").toByteArray())
-                    .enqueue()
+    private val gattCallback = object : android.bluetooth.BluetoothGattCallback() {
+        override fun onConnectionStateChange(
+            gatt: android.bluetooth.BluetoothGatt,
+            status: Int,
+            newState: Int
+        ) {
+            when (newState) {
+                android.bluetooth.BluetoothProfile.STATE_CONNECTED -> {
+                    _connectionState.value = ConnectionState.CONNECTED
+                    gatt.discoverServices()
+                }
+                android.bluetooth.BluetoothProfile.STATE_DISCONNECTED -> {
+                    _connectionState.value = ConnectionState.DISCONNECTED
+                }
             }
         }
-    }
 
-    fun readOBD(mode: String, pid: String) {
-        // Example: mode "01" pid "05" -> coolant temp
-        val cmd = mode + pid
-        sendCommand(cmd)
-    }
-
-    private fun sendCommand(cmd: String) {
-        request {
-            txCharacteristic?.let {
-                writeCharacteristic(it, (cmd + "\r").toByteArray())
-                    .enqueue()
+        override fun onServicesDiscovered(gatt: android.bluetooth.BluetoothGatt, status: Int) {
+            if (status == android.bluetooth.BluetoothGatt.GATT_SUCCESS) {
+                val service = gatt.getService(SERVICE_UUID) ?: return
+                val char = service.getCharacteristic(RX_CHAR_UUID) ?: return
+                gatt.setCharacteristicNotification(char, true)
+                // Enable notification descriptor
+                val descriptor = char.getDescriptor(
+                    java.util.UUID.fromString("00002902-0000-1000-8000-00805f9b34fb")
+                )
+                descriptor?.value = android.bluetooth.BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE
+                gatt.writeDescriptor(descriptor)
             }
         }
-    }
-}
 
-enum class ConnectionState {
-    DISCONNECTED,
-    CONNECTING,
-    CONNECTED,
-    DISCONNECTING
+        override fun onCharacteristicChanged(
+            gatt: android.bluetooth.BluetoothGatt,
+            characteristic: android.bluetooth.BluetoothGattCharacteristic
+        ) {
+            _rawData.value = characteristic.value
+        }
+    }
 }
