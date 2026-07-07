@@ -68,9 +68,10 @@ dependencies {
     implementation("no.nordicsemi.android:ble-ktx:2.8.0")
     implementation("no.nordicsemi.android.support.v18:scanner:1.6.0")
 
-    // OBD II / CAN bus
-    implementation("com.github.tbruyelle:rxpermissions:0.12")
-    implementation("io.github.eltonvs:kotlin-obd-api:1.0.1")
+    // OBD II / CAN bus (parsing implemented in ObdPids.kt, no external lib needed)
+
+    // Permissions (Compose-native, coroutine-friendly)
+    implementation("com.google.accompanist:accompanist-permissions:0.34.0")
 
     // Room DB (local telemetry storage)
     implementation("androidx.room:room-runtime:2.6.1")
