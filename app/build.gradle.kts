@@ -94,6 +94,10 @@ dependencies {
     // Location services (for trip logging)
     implementation("com.google.android.gms:play-services-location:21.3.0")
 
+    // Android Auto / MediaBrowserServiceCompat
+    implementation("androidx.media:media:1.7.0")
+    implementation("androidx.core:core:1.13.1")
+
     // Logging
     implementation("com.jakewharton.timber:timber:5.0.1")
 

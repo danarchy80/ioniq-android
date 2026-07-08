@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Android Auto feature flags.
+  Declaring media capability allows the MediaBrowserService to surface
+  vehicle telemetry on Android Auto head-units.
+  https://developer.android.com/training/cars/media#declare-in-manifest
+-->
+<automotiveApp>
+    <uses name="media" />
+</automotiveApp>
