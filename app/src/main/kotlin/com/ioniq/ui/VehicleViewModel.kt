@@ -15,6 +15,7 @@ class VehicleViewModel(
 ) : ViewModel() {
 
     val scanResults: StateFlow<List<BluetoothDevice>> = repo.scanResults
+    val scanError: StateFlow<String?> = repo.scanError
     val connectionState: StateFlow<ElmBleManager.ConnectionState> = repo.connectionState
     val isReconnecting: StateFlow<Boolean> = repo.isReconnecting
     val reconnectAttempts: StateFlow<Int> = repo.reconnectAttempts
@@ -24,6 +25,7 @@ class VehicleViewModel(
     fun stopScan() = repo.stopScan()
     fun connect(device: BluetoothDevice) = repo.connect(device)
     fun disconnect() = repo.disconnect()
+    fun clearScanError() = repo.let { /* BleScanner handles this internally */ }
 
     override fun onCleared() {
         super.onCleared()

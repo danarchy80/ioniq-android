@@ -1,10 +1,16 @@
 package com.ioniq.ble
 
+import android.Manifest
+import android.annotation.SuppressLint
 import android.bluetooth.BluetoothDevice
+import android.bluetooth.BluetoothManager
 import android.content.Context
+import android.content.pm.PackageManager
+import androidx.core.content.ContextCompat
 import kotlinx.coroutines.channels.awaitClose
-import kotlinx.coroutines.flow.*
-import kotlinx.coroutines.launch
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
 import timber.log.Timber
 
 /**
@@ -18,26 +24,49 @@ class BleScanner(private val context: Context) {
     private val _scanResults = MutableStateFlow<List<BluetoothDevice>>(emptyList())
     val scanResults: StateFlow<List<BluetoothDevice>> = _scanResults.asStateFlow()
 
+    private val _scanError = MutableStateFlow<String?>(null)
+    val scanError: StateFlow<String?> = _scanError.asStateFlow()
+
     @Volatile private var isScanning = false
 
-    @android.annotation.SuppressLint("MissingPermission")
+    @SuppressLint("MissingPermission")
     fun startScan() {
         if (isScanning) return
+
+        // Guard: check permissions
+        if (!hasBlePermissions()) {
+            _scanError.value = "Bluetooth permissions not granted"
+            Timber.e("Cannot scan: missing BLUETOOTH_SCAN permission")
+            return
+        }
+
+        // Guard: check Bluetooth is enabled
+        val manager = context.getSystemService(Context.BLUETOOTH_SERVICE) as BluetoothManager
+        val adapter = manager.adapter
+        if (adapter == null) {
+            _scanError.value = "No Bluetooth adapter available"
+            Timber.e("Cannot scan: no Bluetooth adapter")
+            return
+        }
+
+        if (!adapter.isEnabled) {
+            _scanError.value = "Bluetooth is disabled"
+            Timber.e("Cannot scan: Bluetooth is disabled")
+            return
+        }
+
+        val scanner = adapter.bluetoothLeScanner
+        if (scanner == null) {
+            _scanError.value = "BLE scanner unavailable"
+            Timber.e("Cannot scan: BLE scanner is null")
+            return
+        }
+
         isScanning = true
+        _scanError.value = null
         _scanResults.value = emptyList()
 
         val seen = mutableSetOf<String>()
-
-        val manager = context.getSystemService(Context.BLUETOOTH_SERVICE)
-            as android.bluetooth.BluetoothManager
-        val adapter = manager.adapter ?: run {
-            isScanning = false
-            return
-        }
-        val scanner = adapter.bluetoothLeScanner ?: run {
-            isScanning = false
-            return
-        }
 
         val callback = object : android.bluetooth.le.ScanCallback() {
             override fun onScanResult(callbackType: Int, result: android.bluetooth.le.ScanResult) {
@@ -59,21 +88,53 @@ class BleScanner(private val context: Context) {
             override fun onScanFailed(errorCode: Int) {
                 Timber.e("BLE scan failed: errorCode=$errorCode")
                 isScanning = false
+                _scanError.value = when (errorCode) {
+                    SCAN_FAILED_ALREADY_STARTED -> "Scan already running"
+                    SCAN_FAILED_APPLICATION_REGISTRATION_FAILED -> "App registration failed"
+                    SCAN_FAILED_INTERNAL_ERROR -> "Internal error"
+                    SCAN_FAILED_FEATURE_UNSUPPORTED -> "Feature unsupported"
+                    else -> "Unknown error (code $errorCode)"
+                }
             }
         }
 
-        scanner.startScan(callback)
-        Timber.i("BLE scan started...")
+        try {
+            scanner.startScan(callback)
+            Timber.i("BLE scan started...")
 
-        // Auto-stop after 15 seconds
-        android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
-            try { scanner.stopScan(callback) } catch (_: Exception) {}
+            // Auto-stop after 15 seconds
+            android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
+                try { scanner.stopScan(callback) } catch (_: Exception) {}
+                isScanning = false
+                Timber.i("BLE scan stopped (${seen.size} devices found)")
+            }, 15_000L)
+        } catch (e: SecurityException) {
+            Timber.e(e, "SecurityException during scan")
+            _scanError.value = "Permission denied during scan"
             isScanning = false
-            Timber.i("BLE scan stopped (${seen.size} devices found)")
-        }, 15_000L)
+        } catch (e: Exception) {
+            Timber.e(e, "Unexpected error during scan")
+            _scanError.value = "Scan failed: ${e.message}"
+            isScanning = false
+        }
     }
 
     fun stopScan() {
         isScanning = false
+    }
+
+    fun clearError() {
+        _scanError.value = null
+    }
+
+    private fun hasBlePermissions(): Boolean {
+        val required = if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.S) {
+            arrayOf(Manifest.permission.BLUETOOTH_SCAN, Manifest.permission.BLUETOOTH_CONNECT)
+        } else {
+            arrayOf(Manifest.permission.ACCESS_FINE_LOCATION)
+        }
+        return required.all {
+            ContextCompat.checkSelfPermission(context, it) == PackageManager.PERMISSION_GRANTED
+        }
     }
 }

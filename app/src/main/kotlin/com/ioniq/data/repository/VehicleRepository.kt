@@ -36,6 +36,7 @@ class VehicleRepository(private val context: Context) {
 
     // ---- Exposed state ----
     val scanResults: StateFlow<List<BluetoothDevice>> = scanner.scanResults
+    val scanError: StateFlow<String?> = scanner.scanError
     val connectionState: StateFlow<ElmBleManager.ConnectionState> = elmManager.connectionState
     val isReconnecting: StateFlow<Boolean> = elmManager.isReconnecting
     val reconnectAttempts: StateFlow<Int> = elmManager.reconnectCount
