@@ -27,6 +27,7 @@ import androidx.compose.material.icons.filled.BatteryChargingFull
 import androidx.compose.material.icons.filled.Bluetooth
 import androidx.compose.material.icons.filled.Bolt
 import androidx.compose.material.icons.filled.CheckCircle
+import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.ElectricBolt
 import androidx.compose.material.icons.filled.Email
 import androidx.compose.material.icons.filled.Info
@@ -52,7 +53,10 @@ import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
@@ -91,6 +95,7 @@ private val ChipNeutral = Color(0xFF78909C)
 
 // ─────────────────────────── HomeScreen ───────────────────────────
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun HomeScreen(
     viewModel: VehicleViewModel,
@@ -171,7 +176,97 @@ fun HomeScreen(
             }
         }
     }
+    }
 }
+
+// ─────────────────────────── Settings Overlay ───────────────────────────
+
+@Composable
+fun SettingsOverlay(
+    telemetry: VehicleTelemetry?,
+    onDismiss: () -> Unit
+) {
+    Surface(
+        modifier = Modifier.fillMaxSize(),
+        color = Color(0xE6000000)
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(20.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp)
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = androidx.compose.ui.Alignment.CenterVertically
+            ) {
+                Text(
+                    "Vehicle Info",
+                    style = MaterialTheme.typography.titleLarge,
+                    fontWeight = FontWeight.Bold,
+                    color = Color.White
+                )
+                IconButton(onClick = onDismiss) {
+                    Icon(
+                        Icons.Default.Close,
+                        contentDescription = "Close",
+                        tint = Color.White
+                    )
+                }
+            }
+
+            Surface(
+                color = Color(0xFF1A2738),
+                shape = RoundedCornerShape(16.dp),
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Column(
+                    modifier = Modifier.padding(16.dp),
+                    verticalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    StatRow("State of Charge", fmtPct(telemetry?.soc))
+                    StatRow("State of Health", fmtPct(telemetry?.soh))
+                    StatRow("Pack Voltage", fmtVolt(telemetry?.batteryVoltage))
+                    StatRow("Pack Current", fmtAmp(telemetry?.batteryCurrent))
+                    StatRow("Charge Power", fmtKw(telemetry?.chargePower))
+                    StatRow("Battery Min Temp", fmtTemp(telemetry?.batteryTempMin))
+                    StatRow("Battery Max Temp", fmtTemp(telemetry?.batteryTempMax))
+                    StatRow("Inlet Temp", fmtTemp(telemetry?.inletTemp))
+                    StatRow("Ambient Temp", fmtTemp(telemetry?.ambientTemp))
+                    StatRow("Min Cell", fmtMv(telemetry?.cellVoltageMin))
+                    StatRow("Max Cell", fmtMv(telemetry?.cellVoltageMax))
+                    StatRow("Odometer", fmtKm(telemetry?.odometer))
+                    StatRow("Energy Charged", fmtKwh(telemetry?.cumulativeEnergyCharged))
+                    StatRow("Energy Discharged", fmtKwh(telemetry?.cumulativeEnergyDischarged))
+                    StatRow("Charging State", telemetry?.chargingState?.name ?: "—")
+                }
+            }
+
+            SupportEmailButton(telemetry)
+        }
+    }
+}
+
+@Composable
+private fun StatRow(label: String, value: String) {
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.SpaceBetween
+    ) {
+        Text(label, color = ChipLabel, style = MaterialTheme.typography.bodyMedium)
+        Text(value, color = ChipValue, style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.Medium)
+    }
+}
+
+private fun fmtPct(v: Float?) = v?.let { String.format("%.1f%%", it) } ?: "—"
+private fun fmtVolt(v: Float?) = v?.let { String.format("%.1f V", it) } ?: "—"
+private fun fmtAmp(v: Float?) = v?.let { String.format("%.1f A", it) } ?: "—"
+private fun fmtKw(v: Float?) = v?.let { String.format("%.2f kW", it) } ?: "—"
+private fun fmtTemp(v: Float?) = v?.let { String.format("%.1f °C", it) } ?: "—"
+private fun fmtMv(v: Int?) = v?.let { String.format("%d mV", it) } ?: "—"
+private fun fmtKm(v: Float?) = v?.let { String.format("%.0f km", it) } ?: "—"
+private fun fmtKwh(v: Float?) = v?.let { String.format("%.2f kWh", it) } ?: "—"
 
 // ─────────────────────────── Support Email Button ───────────────────────────
 
