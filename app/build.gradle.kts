@@ -9,6 +9,17 @@ android {
     namespace = "com.ioniq"
     compileSdk = 34
 
+    // Load support config from local.properties (gitignored — not in source control)
+    val localPropsFile = rootProject.file("local.properties")
+    val supportEmail = if (localPropsFile.exists()) {
+        localPropsFile.readText()
+            .lines()
+            .map { it.trim() }
+            .find { it.startsWith("supportEmail=") }
+            ?.substringAfter("=")?.trim()
+            ?: ""
+    } else ""
+
     defaultConfig {
         applicationId = "com.ioniq.android"
         minSdk = 26
@@ -17,6 +28,10 @@ android {
         versionName = "1.0.0-beta.1"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+
+        // Support email destination — read from local.properties at build time.
+        // Falls back to empty string if not configured.
+        buildConfigField("String", "SUPPORT_EMAIL", "\"${supportEmail.ifBlank { "" }}\"")
     }
 
     buildTypes {

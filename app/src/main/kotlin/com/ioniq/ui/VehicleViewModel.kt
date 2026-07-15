@@ -4,7 +4,7 @@ import android.bluetooth.BluetoothDevice
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
-import com.ioniq.ble.ElmBleManager
+import com.ioniq.ble.ObdTransport
 import com.ioniq.data.model.VehicleTelemetry
 import com.ioniq.data.repository.VehicleRepository
 import kotlinx.coroutines.flow.*
@@ -16,15 +16,18 @@ class VehicleViewModel(
 
     val scanResults: StateFlow<List<BluetoothDevice>> = repo.scanResults
     val scanError: StateFlow<String?> = repo.scanError
-    val connectionState: StateFlow<ElmBleManager.ConnectionState> = repo.connectionState
+    val connectionState: StateFlow<ObdTransport.ConnectionState> = repo.connectionState
     val isReconnecting: StateFlow<Boolean> = repo.isReconnecting
     val reconnectAttempts: StateFlow<Int> = repo.reconnectAttempts
     val vehicleState: StateFlow<VehicleTelemetry?> = repo.vehicleState
+    val pairedClassicDevices: StateFlow<List<BluetoothDevice>> = repo.pairedClassicDevices
 
     fun startScan() = repo.startScan()
     fun stopScan() = repo.stopScan()
     fun connect(device: BluetoothDevice) = repo.connect(device)
     fun disconnect() = repo.disconnect()
+    fun refreshPairedDevices() = repo.refreshPairedDevices()
+    fun pairClassic(device: BluetoothDevice): Boolean = repo.pair(device)
     fun clearScanError() = repo.let { /* BleScanner handles this internally */ }
 
     override fun onCleared() {

@@ -3,7 +3,10 @@ package com.ioniq.data.repository
 import android.bluetooth.BluetoothDevice
 import android.content.Context
 import com.ioniq.ble.BleScanner
-import com.ioniq.ble.ElmBleManager
+import com.ioniq.ble.ClassicBtDeviceProvider
+import com.ioniq.ble.ObdTransport
+import com.ioniq.ble.ObdTransportFactory
+import com.ioniq.ble.TransportHint
 import com.ioniq.data.db.IoniqDatabase
 import com.ioniq.data.model.CellReading
 import com.ioniq.data.model.VehicleTelemetry
@@ -17,29 +20,48 @@ import java.time.Instant
 
 /**
  * Central repository orchestrating:
- *   BLE Scanner → ElmBleManager → OBD PID polling → Room DB → Home Assistant push
+ *   BLE Scanner → ObdTransport (BLE or classic RFCOMM) → OBD PID polling → Room DB → Home Assistant
  *
  * Lifecycle: created by ViewModel or Service, call destroy() when done.
+ *
+ * Transport selection: the right implementation (ElmBleManager or ElmClassicManager)
+ * is picked per-device based on device.type (see ObdTransportFactory). This fixes
+ * the long-standing bug where classic SPP adapters were being driven through BLE
+ * GATT, causing the OBD bus to hang post-connect.
  */
 class VehicleRepository(private val context: Context) {
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val scanner = BleScanner(context)
-    private val elmManager = ElmBleManager(context)
+    private val classicProvider = ClassicBtDeviceProvider(context)
     private val db = IoniqDatabase.getDatabase(context)
     private val telemetryDao = db.telemetryDao()
     private val cellReadingDao = db.cellReadingDao()
-    // ObdParser is a Kotlin singleton object — call directly as ObdParser.method()
+
+    // ---- Active transport (BLE or classic RFCOMM) ----
+    private var transport: ObdTransport? = null
+    private var transportFlowsMirrorJob: Job? = null
 
     // ---- Home Assistant client (lazy init with saved config) ----
     private var haClient: HomeAssistantClient? = null
 
-    // ---- Exposed state ----
+    // ---- Exposed state (mirrored from active transport) ----
     val scanResults: StateFlow<List<BluetoothDevice>> = scanner.scanResults
     val scanError: StateFlow<String?> = scanner.scanError
-    val connectionState: StateFlow<ElmBleManager.ConnectionState> = elmManager.connectionState
-    val isReconnecting: StateFlow<Boolean> = elmManager.isReconnecting
-    val reconnectAttempts: StateFlow<Int> = elmManager.reconnectCount
+
+    private val _connectionState = MutableStateFlow(ObdTransport.ConnectionState.DISCONNECTED)
+    val connectionState: StateFlow<ObdTransport.ConnectionState> = _connectionState.asStateFlow()
+
+    private val _isReconnecting = MutableStateFlow(false)
+    val isReconnecting: StateFlow<Boolean> = _isReconnecting.asStateFlow()
+
+    private val _reconnectAttempts = MutableStateFlow(0)
+    val reconnectAttempts: StateFlow<Int> = _reconnectAttempts.asStateFlow()
+
+    val connectedTransportName: StateFlow<String?>
+        get() = MutableStateFlow(transport?.let {
+            if (it is com.ioniq.ble.ElmBleManager) "BLE" else "Classic RFCOMM"
+        })
 
     private val _vehicleState = MutableStateFlow<VehicleTelemetry?>(null)
     val vehicleState: StateFlow<VehicleTelemetry?> = _vehicleState.asStateFlow()
@@ -51,19 +73,30 @@ class VehicleRepository(private val context: Context) {
     fun stopScan() = scanner.stopScan()
 
     // ---- Connection ----
-    fun connect(device: BluetoothDevice) {
-        elmManager.connectToDevice(device)
+
+    /** Connect using auto-selected transport (based on device.type). */
+    fun connect(device: BluetoothDevice) = connect(device, TransportHint.AUTO)
+
+    /** Connect with explicit transport hint. */
+    fun connect(device: BluetoothDevice, hint: TransportHint) {
+        // Tear down any previous transport first
+        disconnect()
+
+        val t = ObdTransportFactory.create(context, device, hint)
+        transport = t
+        mirrorTransportState(t)
+        t.connectToDevice(device)
 
         // Start polling when connected
         connectionState
-            .filter { it == ElmBleManager.ConnectionState.CONNECTED }
+            .filter { it == ObdTransport.ConnectionState.CONNECTED }
             .take(1)
-            .onEach { startPolling() }
+            .onEach { startPolling(t) }
             .launchIn(scope)
 
         // Stop polling when disconnected
         connectionState
-            .filter { it == ElmBleManager.ConnectionState.DISCONNECTED }
+            .filter { it == ObdTransport.ConnectionState.DISCONNECTED }
             .onEach {
                 pollJob?.cancel()
                 pollJob = null
@@ -71,17 +104,38 @@ class VehicleRepository(private val context: Context) {
             .launchIn(scope)
     }
 
+    /**
+     * Mirror the active transport's state flows into this repository's own flows
+     * so UI/ViewModel code stays unchanged. Releasing happens in disconnect().
+     */
+    private fun mirrorTransportState(t: ObdTransport) {
+        transportFlowsMirrorJob?.cancel()
+        transportFlowsMirrorJob = scope.launch {
+            launch { t.connectionState.collect { _connectionState.value = it } }
+            launch { t.isReconnecting.collect { _isReconnecting.value = it } }
+            launch { t.reconnectCount.collect { _reconnectAttempts.value = it } }
+        }
+    }
+
     fun disconnect() {
-        elmManager.disconnect()
+        transportFlowsMirrorJob?.cancel()
+        transportFlowsMirrorJob = null
+        transport?.disconnect()
+        transport?.release()
+        transport = null
+        _connectionState.value = ObdTransport.ConnectionState.DISCONNECTED
+        _isReconnecting.value = false
+        _reconnectAttempts.value = 0
         pollJob?.cancel()
         pollJob = null
     }
 
-    // ---- PID Polling Loop ----
-    private fun startPolling() {
+    // ---- PID Polling Loop (works on EITHER transport now) ----
+
+    private fun startPolling(t: ObdTransport) {
         pollJob?.cancel()
         pollJob = scope.launch {
-            Timber.i("Starting OBD-II PID polling loop")
+            Timber.i("Starting OBD-II PID polling loop over ${if (t is com.ioniq.ble.ElmBleManager) "BLE" else "Classic RFCOMM"}")
 
             // Connect HA client if config available
             initHaClient()
@@ -97,21 +151,21 @@ class VehicleRepository(private val context: Context) {
                 ObdPids.CHARGING_STATE
             )
 
-            // Slow poll: cumulative energy stats (every 10s)
+            // Slow poll: cumulative energy stats (every 5th cycle)
             var slowTick = 0
 
-            while (isActive && connectionState.value == ElmBleManager.ConnectionState.CONNECTED) {
+            while (isActive && t.connectionState.value == ObdTransport.ConnectionState.CONNECTED) {
 
                 val now = Instant.now().toEpochMilli()
-                val soc = elmManager.readPid(ObdPids.SOC_DISPLAY)?.let { ObdParser.parseSoc(it) }
-                val voltage = elmManager.readPid(ObdPids.PACK_VOLTAGE)?.let { ObdParser.parseBatteryVoltage(it) }
-                val current = elmManager.readPid(ObdPids.PACK_CURRENT)?.let { ObdParser.parseBatteryCurrent(it) }
-                val battTempMax = elmManager.readPid(ObdPids.BATTERY_TEMP)?.let {
+                val soc = t.readPid(ObdPids.SOC_DISPLAY)?.let { ObdParser.parseSoc(it) }
+                val voltage = t.readPid(ObdPids.PACK_VOLTAGE)?.let { ObdParser.parseBatteryVoltage(it) }
+                val current = t.readPid(ObdPids.PACK_CURRENT)?.let { ObdParser.parseBatteryCurrent(it) }
+                val battTempMax = t.readPid(ObdPids.BATTERY_TEMP)?.let {
                     ObdParser.parseBatteryTemp(it).maxOrNull()
                 }
-                val inletTemp = elmManager.readPid(ObdPids.INLET_TEMP)?.let { ObdParser.parseInletTemp(it) }
-                val ambientTemp = elmManager.readPid(ObdPids.AMBIENT_TEMP)?.let { ObdParser.parseAmbientTemp(it) }
-                val chargingState = elmManager.readPid(ObdPids.CHARGING_STATE)?.let { ObdParser.parseChargingState(it) } ?: com.ioniq.data.model.ChargingState.NOT_CHARGING
+                val inletTemp = t.readPid(ObdPids.INLET_TEMP)?.let { ObdParser.parseInletTemp(it) }
+                val ambientTemp = t.readPid(ObdPids.AMBIENT_TEMP)?.let { ObdParser.parseAmbientTemp(it) }
+                val chargingState = t.readPid(ObdPids.CHARGING_STATE)?.let { ObdParser.parseChargingState(it) } ?: com.ioniq.data.model.ChargingState.NOT_CHARGING
 
                 // Slow-poll fields every 5th cycle
                 var cumCharge: Float? = null
@@ -121,13 +175,13 @@ class VehicleRepository(private val context: Context) {
                 var cellVoltages: List<CellReading>? = null
 
                 if (slowTick % 5 == 0) {
-                    cumCharge = elmManager.readPid(ObdPids.CUMULATIVE_ENERGY_CHARGED)?.let {
+                    cumCharge = t.readPid(ObdPids.CUMULATIVE_ENERGY_CHARGED)?.let {
                         ObdParser.parseCumulativeEnergy(it)
                     }
-                    cumDischarge = elmManager.readPid(ObdPids.CUMULATIVE_ENERGY_DISCHARGED)?.let {
+                    cumDischarge = t.readPid(ObdPids.CUMULATIVE_ENERGY_DISCHARGED)?.let {
                         ObdParser.parseCumulativeEnergy(it)
                     }
-                    val cellData = elmManager.readPid(ObdPids.CELL_VOLTAGES)?.let {
+                    val cellData = t.readPid(ObdPids.CELL_VOLTAGES)?.let {
                         ObdParser.parseCellVoltages(now, 0, it)
                     }
                     cellVoltages = cellData
@@ -214,12 +268,34 @@ class VehicleRepository(private val context: Context) {
     val haState: StateFlow<HomeAssistantClient.HaState>
         get() = haClient?.state ?: MutableStateFlow(HomeAssistantClient.HaState.DISCONNECTED)
 
+    // ---- Classic (paired) Bluetooth devices & in-app pairing ----
+
+    /** Live list of bonded (paired) classic-BT devices; used by the in-app picker. */
+    val pairedClassicDevices: StateFlow<List<BluetoothDevice>>
+        get() = classicProvider.pairedDevices
+
+    /** Re-read bond list from the OS (e.g. after returning from a pairing dialog). */
+    fun refreshPairedDevices() {
+        classicProvider.refresh()
+    }
+
+    /** Start a pairing flow for an unpaired classic-BT device. Returns true if bonding began. */
+    fun pair(device: BluetoothDevice): Boolean {
+        classicProvider.startListening()
+        return classicProvider.pair(device).also {
+            if (it) Timber.i("Bonding started for ${device.address}")
+        }
+    }
+
     // ---- Lifecycle ----
 
     fun destroy() {
         pollJob?.cancel()
         scanner.stopScan()
-        elmManager.release()
+        classicProvider.stopListening()
+        transport?.release()
+        transport = null
+        transportFlowsMirrorJob?.cancel()
         haClient?.release()
         scope.cancel()
     }

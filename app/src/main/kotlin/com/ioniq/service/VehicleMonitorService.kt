@@ -8,7 +8,7 @@ import android.os.Build
 import android.os.IBinder
 import androidx.core.app.NotificationCompat
 import com.ioniq.R
-import com.ioniq.ble.ElmBleManager
+import com.ioniq.ble.ObdTransport
 import com.ioniq.data.repository.VehicleRepository
 import com.ioniq.ui.MainActivity
 import kotlinx.coroutines.*
@@ -84,10 +84,10 @@ class VehicleMonitorService : Service() {
                         .distinctUntilChanged()
                         .collect { state ->
                             val msg = when (state) {
-                                ElmBleManager.ConnectionState.CONNECTED -> "Connected — monitoring telemetry"
-                                ElmBleManager.ConnectionState.CONNECTING -> "Connecting..."
-                                ElmBleManager.ConnectionState.DISCONNECTING -> "Disconnecting..."
-                                ElmBleManager.ConnectionState.DISCONNECTED -> "Disconnected — reconnecting..."
+                                ObdTransport.ConnectionState.CONNECTED -> "Connected — monitoring telemetry"
+                                ObdTransport.ConnectionState.CONNECTING -> "Connecting..."
+                                ObdTransport.ConnectionState.DISCONNECTING -> "Disconnecting..."
+                                ObdTransport.ConnectionState.DISCONNECTED -> "Disconnected — reconnecting..."
                             }
                             val nm = getSystemService(NOTIFICATION_SERVICE) as NotificationManager
                             nm.notify(NOTIFICATION_ID, buildNotification(msg))

@@ -28,6 +28,7 @@ import androidx.compose.material.icons.filled.Bluetooth
 import androidx.compose.material.icons.filled.Bolt
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.ElectricBolt
+import androidx.compose.material.icons.filled.Email
 import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.Lightbulb
 import androidx.compose.material.icons.filled.Link
@@ -56,6 +57,9 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -65,7 +69,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import com.ioniq.ble.ElmBleManager
+import com.ioniq.ble.ObdTransport
 import com.ioniq.data.model.ChargingState
 import com.ioniq.data.model.VehicleTelemetry
 import com.ioniq.ui.VehicleViewModel
@@ -93,6 +97,7 @@ fun HomeScreen(
     bluetoothReady: StateFlow<Boolean>,
     onRequestPermissions: () -> Unit
 ) {
+    var showSettings by remember { mutableStateOf(false) }
     val scanResults by viewModel.scanResults.collectAsState()
     val connectionState by viewModel.connectionState.collectAsState()
     val isReconnecting by viewModel.isReconnecting.collectAsState()
@@ -101,9 +106,31 @@ fun HomeScreen(
     val scanError by viewModel.scanError.collectAsState()
     val btReady by bluetoothReady.collectAsState()
     val context = LocalContext.current
+    val telemetry = vehicleState  // vehicleState IS the telemetry data class
 
-    LazyColumn(
-        modifier = Modifier
+    // ── Settings Overlay ──
+    if (showSettings) {
+        SettingsOverlay(
+            telemetry = telemetry,
+            onDismiss = { showSettings = false }
+        )
+    }
+
+    androidx.compose.material3.Scaffold(
+        topBar = {
+            androidx.compose.material3.TopAppBar(
+                title = { Text("Ioniq Telemetry") },
+                actions = {
+                    IconButton(onClick = { showSettings = true }) {
+                        Icon(Icons.Default.Settings, contentDescription = "Settings")
+                    }
+                }
+            )
+        }
+    ) { padding ->
+        LazyColumn(
+            modifier = Modifier
+            .padding(padding)
             .fillMaxSize()
             .padding(horizontal = 16.dp, vertical = 12.dp),
         verticalArrangement = Arrangement.spacedBy(16.dp)
@@ -120,20 +147,12 @@ fun HomeScreen(
                 item { BluetoothSetupCard(onRequestPermissions, context) }
                 item { GettingStartedCard() }
             }
-            connectionState == ElmBleManager.ConnectionState.DISCONNECTED -> {
+            connectionState == ObdTransport.ConnectionState.DISCONNECTED -> {
                 item { ScannerSection(viewModel, scanResults, scanError) }
-                item {
-                    BluetoothSettingsButton {
-                        context.startActivity(
-                            Intent(Settings.ACTION_BLUETOOTH_SETTINGS).apply {
-                                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                            }
-                        )
-                    }
-                }
+                item { PairedDevicesSection(viewModel) }
                 item { GettingStartedCard() }
             }
-            connectionState == ElmBleManager.ConnectionState.CONNECTED -> {
+            connectionState == ObdTransport.ConnectionState.CONNECTED -> {
                 item { TelemetryDashboard(vehicleState) }
             }
             else -> {
@@ -151,6 +170,29 @@ fun HomeScreen(
                 }
             }
         }
+    }
+}
+
+// ─────────────────────────── Support Email Button ───────────────────────────
+
+@Composable
+fun SupportEmailButton(telemetry: VehicleTelemetry?) {
+    val context = LocalContext.current
+
+    OutlinedButton(
+        onClick = {
+            try {
+                com.ioniq.diag.SupportEmailSender.launch(context, telemetry)
+            } catch (e: android.content.ActivityNotFoundException) {
+                android.widget.Toast.makeText(context, "No email client installed", android.widget.Toast.LENGTH_LONG).show()
+            }
+        },
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(12.dp)
+    ) {
+        Icon(Icons.Default.Email, contentDescription = null, modifier = Modifier.size(18.dp))
+        Spacer(Modifier.width(8.dp))
+        Text("Send Support Email")
     }
 }
 
@@ -210,20 +252,140 @@ fun BluetoothSetupCard(onRequestPermissions: () -> Unit, context: android.conten
     }
 }
 
-// ─────────────────────────── BluetoothSettingsButton ───────────────────────────
+// ─────────────────────────── PairedDevicesSection ───────────────────────────
+
+@androidx.compose.runtime.Composable
+fun PairedDevicesSection(viewModel: VehicleViewModel) {
+    val paired by viewModel.pairedClassicDevices.collectAsState()
+    val context = LocalContext.current
+
+    // (Re-)load bond list whenever this section is visible.
+    androidx.compose.runtime.LaunchedEffect(Unit) { viewModel.refreshPairedDevices() }
+
+    Column {
+        Text(
+            "My Paired OBD Adapters",
+            style = MaterialTheme.typography.titleMedium,
+            fontWeight = FontWeight.Bold,
+            color = ChipValue
+        )
+        Spacer(Modifier.height(12.dp))
+
+        OutlinedButton(
+            onClick = { viewModel.refreshPairedDevices() },
+            modifier = Modifier.fillMaxWidth(),
+            shape = RoundedCornerShape(12.dp)
+        ) {
+            Icon(Icons.Default.Sync, contentDescription = null, modifier = Modifier.size(18.dp))
+            Spacer(Modifier.width(8.dp))
+            Text("Refresh paired list")
+        }
+
+        if (paired.isEmpty()) {
+            Spacer(Modifier.height(12.dp))
+            Card(
+                modifier = Modifier.fillMaxWidth(),
+                colors = CardDefaults.cardColors(containerColor = ChipBg),
+                shape = RoundedCornerShape(12.dp)
+            ) {
+                Column(modifier = Modifier.padding(16.dp)) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Icon(Icons.Default.Info, contentDescription = null, tint = ChipAccent)
+                        Spacer(Modifier.width(8.dp))
+                        Text(
+                            "No paired adapters yet",
+                            style = MaterialTheme.typography.bodyMedium,
+                            fontWeight = FontWeight.SemiBold,
+                            color = ChipValue
+                        )
+                    }
+                    Spacer(Modifier.height(8.dp))
+                    Text(
+                        "Pair your OBD-II adapter via your phone's Bluetooth settings first, then it will appear here for in-app connect.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = ChipLabel
+                    )
+                    Spacer(Modifier.height(12.dp))
+                    OutlinedButton(
+                        onClick = {
+                            context.startActivity(
+                                Intent(Settings.ACTION_BLUETOOTH_SETTINGS).apply {
+                                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                                }
+                            )
+                        },
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Icon(Icons.Default.Settings, contentDescription = null, modifier = Modifier.size(18.dp))
+                        Spacer(Modifier.width(8.dp))
+                        Text("Open Bluetooth Settings")
+                    }
+                }
+            }
+            return@Column
+        }
+
+        Spacer(Modifier.height(8.dp))
+        Text(
+            "${paired.size} paired device${if (paired.size != 1) "s" else ""}:",
+            style = MaterialTheme.typography.bodySmall,
+            color = ChipLabel
+        )
+        Spacer(Modifier.height(8.dp))
+        paired.forEach { device ->
+            PairedDeviceListItem(device) { viewModel.connect(device) }
+        }
+    }
+}
 
 @Composable
-fun BluetoothSettingsButton(onClick: () -> Unit) {
-    OutlinedButton(
-        onClick = onClick,
-        modifier = Modifier.fillMaxWidth(),
+fun PairedDeviceListItem(device: BluetoothDevice, onConnect: () -> Unit) {
+    val name = device.name.takeUnless { it.isNullOrBlank() } ?: "Unknown device"
+    val bondState = if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.ICE_CREAM_SANDWICH_MR1) {
+        device.bondState
+    } else BluetoothDevice.BOND_NONE
+    val isBonded = bondState == BluetoothDevice.BOND_BONDED
+
+    Card(
+        modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp),
+        onClick = onConnect,
+        colors = CardDefaults.cardColors(containerColor = ChipBg),
         shape = RoundedCornerShape(12.dp)
     ) {
-        Icon(Icons.Default.Settings, contentDescription = null, modifier = Modifier.size(18.dp))
-        Spacer(Modifier.width(8.dp))
-        Text("Open Bluetooth Settings")
-        Spacer(Modifier.width(4.dp))
-        Icon(Icons.Default.OpenInNew, contentDescription = null, modifier = Modifier.size(14.dp))
+        Row(
+            modifier = Modifier.padding(16.dp).fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Icon(
+                if (isBonded) Icons.Default.CheckCircle else Icons.Default.Bluetooth,
+                contentDescription = null,
+                tint = if (isBonded) ChipGood else ChipAccent,
+                modifier = Modifier.size(24.dp)
+            )
+            Spacer(Modifier.width(12.dp))
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    name,
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = ChipValue,
+                    fontWeight = FontWeight.SemiBold
+                )
+                Text(
+                    device.address,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = ChipLabel,
+                    fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace
+                )
+            }
+            Text("Connect", color = ChipAccent, fontWeight = FontWeight.SemiBold)
+            Spacer(Modifier.width(4.dp))
+            Icon(
+                Icons.AutoMirrored.Filled.ArrowForward,
+                contentDescription = "Connect",
+                tint = ChipAccent,
+                modifier = Modifier.size(20.dp)
+            )
+        }
     }
 }
 
@@ -321,7 +483,7 @@ fun OnboardingStep(number: Int, title: String, body: String) {
 
 @Composable
 fun ConnectionStatusCard(
-    state: ElmBleManager.ConnectionState,
+    state: ObdTransport.ConnectionState,
     isReconnecting: Boolean,
     attempts: Int
 ) {
@@ -329,10 +491,10 @@ fun ConnectionStatusCard(
         modifier = Modifier.fillMaxWidth(),
         colors = CardDefaults.cardColors(
             containerColor = when (state) {
-                ElmBleManager.ConnectionState.CONNECTED -> ChipBg
-                ElmBleManager.ConnectionState.CONNECTING -> Color(0xFF1E2A3A)
-                ElmBleManager.ConnectionState.DISCONNECTING -> Color(0xFF2A1E1E)
-                ElmBleManager.ConnectionState.DISCONNECTED -> Color(0xFF2A1B1B)
+                ObdTransport.ConnectionState.CONNECTED -> ChipBg
+                ObdTransport.ConnectionState.CONNECTING -> Color(0xFF1E2A3A)
+                ObdTransport.ConnectionState.DISCONNECTING -> Color(0xFF2A1E1E)
+                ObdTransport.ConnectionState.DISCONNECTED -> Color(0xFF2A1B1B)
             }
         ),
         shape = RoundedCornerShape(12.dp)
@@ -342,10 +504,10 @@ fun ConnectionStatusCard(
             verticalAlignment = Alignment.CenterVertically
         ) {
             val (icon: ImageVector, tint: Color) = when (state) {
-                ElmBleManager.ConnectionState.CONNECTED -> Icons.Default.Link to ChipGood
-                ElmBleManager.ConnectionState.CONNECTING -> Icons.Default.Sync to ChipWarn
-                ElmBleManager.ConnectionState.DISCONNECTING -> Icons.Default.SyncDisabled to ChipWarn
-                ElmBleManager.ConnectionState.DISCONNECTED -> Icons.Default.LinkOff to ChipBad
+                ObdTransport.ConnectionState.CONNECTED -> Icons.Default.Link to ChipGood
+                ObdTransport.ConnectionState.CONNECTING -> Icons.Default.Sync to ChipWarn
+                ObdTransport.ConnectionState.DISCONNECTING -> Icons.Default.SyncDisabled to ChipWarn
+                ObdTransport.ConnectionState.DISCONNECTED -> Icons.Default.LinkOff to ChipBad
             }
             Icon(
                 imageVector = icon,
@@ -359,10 +521,10 @@ fun ConnectionStatusCard(
                     text = when {
                         isReconnecting -> "Reconnecting (attempt $attempts/5)…"
                         else -> when (state) {
-                            ElmBleManager.ConnectionState.CONNECTED -> "Connected"
-                            ElmBleManager.ConnectionState.CONNECTING -> "Connecting…"
-                            ElmBleManager.ConnectionState.DISCONNECTING -> "Disconnecting…"
-                            ElmBleManager.ConnectionState.DISCONNECTED -> "Disconnected"
+                            ObdTransport.ConnectionState.CONNECTED -> "Connected"
+                            ObdTransport.ConnectionState.CONNECTING -> "Connecting…"
+                            ObdTransport.ConnectionState.DISCONNECTING -> "Disconnecting…"
+                            ObdTransport.ConnectionState.DISCONNECTED -> "Disconnected"
                         }
                     },
                     style = MaterialTheme.typography.titleSmall,

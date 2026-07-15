@@ -20,20 +20,19 @@ import java.util.UUID
  * - ELM init sequence (ATZ, ATE0, ATH0, ATSP0)
  * - Send OBD-II commands, receive responses
  * - Automatic reconnection with exponential backoff
+ * - Timeout guards on every phase of the connection handshake
  */
-class ElmBleManager(context: Context) {
+class ElmBleManager(context: Context) : ObdTransport {
 
     // ---- Connection State ----
-    enum class ConnectionState { DISCONNECTED, CONNECTING, CONNECTED, DISCONNECTING }
-
     private val _connectionState = MutableStateFlow(ConnectionState.DISCONNECTED)
-    val connectionState: StateFlow<ConnectionState> = _connectionState.asStateFlow()
+    override val connectionState: StateFlow<ConnectionState> = _connectionState.asStateFlow()
 
     private val _reconnectCount = MutableStateFlow(0)
-    val reconnectCount: StateFlow<Int> = _reconnectCount.asStateFlow()
+    override val reconnectCount: StateFlow<Int> = _reconnectCount.asStateFlow()
 
     private val _isReconnecting = MutableStateFlow(false)
-    val isReconnecting: StateFlow<Boolean> = _isReconnecting.asStateFlow()
+    override val isReconnecting: StateFlow<Boolean> = _isReconnecting.asStateFlow()
 
     // ---- Auto-reconnect config ----
     private var autoReconnectEnabled = false
@@ -45,6 +44,14 @@ class ElmBleManager(context: Context) {
     // ---- Coroutine scope ----
     private val managerScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private var reconnectJob: Job? = null
+    private var connectTimeoutJob: Job? = null
+
+    // ---- Configurable timeouts (ms) ----
+    var gattConnectTimeoutMs = 15_000L
+    var descriptorWriteTimeoutMs = 10_000L
+    var serviceDiscoveryTimeoutMs = 10_000L
+    var elmInitTotalTimeoutMs = 30_000L
+    var atCommandTimeoutMs = 5_000L
 
     // ---- ELM327 command/response ----
     @Volatile private var lastResponse = StringBuilder()
@@ -55,6 +62,11 @@ class ElmBleManager(context: Context) {
     private var gatt: BluetoothGatt? = null
     private var txChar: BluetoothGattCharacteristic? = null
     private var rxChar: BluetoothGattCharacteristic? = null
+
+    // ---- Synchronization state (handshake pipeline) ----
+    // 0=idle 1=discovering services 2=writing CCCD 3=ELM-init
+    @Volatile private var handshakePhase = 0
+    private val handshakeLock = Object()
 
     companion object {
         private val TAG = "ElmBleManager"
@@ -67,6 +79,17 @@ class ElmBleManager(context: Context) {
 
     private val appContext = context.applicationContext
 
+    /**
+     * True if the device advertises a GATT-compatible service (i.e. it's a BLE adapter).
+     * Quick heuristic used by the transport selector before committing to BLE or RFCOMM.
+     */
+    fun isBleObdAdapter(device: BluetoothDevice): Boolean {
+        // Classic-only adapters won't have any GATT services; we check type flags.
+        val type = device.type
+        return type == BluetoothDevice.DEVICE_TYPE_LE ||
+            type == BluetoothDevice.DEVICE_TYPE_DUAL
+    }
+
     // ---- GATT Callback ----
     private val gattCallback = object : BluetoothGattCallback() {
         override fun onConnectionStateChange(gatt: BluetoothGatt, status: Int, newState: Int) {
@@ -74,11 +97,16 @@ class ElmBleManager(context: Context) {
             when (newState) {
                 BluetoothProfile.STATE_CONNECTED -> {
                     Timber.i("GATT connected → discovering services")
+                    _connectionState.value = ConnectionState.CONNECTING
+                    handshakePhase = 1
                     gatt.discoverServices()
+                    startHandshakeWatchdog(gatt)
                 }
                 BluetoothProfile.STATE_DISCONNECTED -> {
+                    cancelHandshakeWatchdog()
                     _connectionState.value = ConnectionState.DISCONNECTED
                     _isReconnecting.value = false
+                    handshakePhase = 0
                     gatt.close()
                     this@ElmBleManager.gatt = null
                     txChar = null
@@ -92,13 +120,13 @@ class ElmBleManager(context: Context) {
         override fun onServicesDiscovered(gatt: BluetoothGatt, status: Int) {
             if (status != BluetoothGatt.GATT_SUCCESS) {
                 Timber.e("Service discovery failed: status=$status")
-                _connectionState.value = ConnectionState.DISCONNECTED
+                handshakeFailed("Service discovery failed status=$status")
                 return
             }
             val service = gatt.getService(OBD_SERVICE_UUID)
             if (service == null) {
                 Timber.e("OBD service $OBD_SERVICE_UUID not found")
-                _connectionState.value = ConnectionState.DISCONNECTED
+                handshakeFailed("OBD service not found — not a BLE ELM327?")
                 gatt.disconnect()
                 return
             }
@@ -111,7 +139,11 @@ class ElmBleManager(context: Context) {
                 val cccd = char.getDescriptor(CCCD_UUID)
                 if (cccd != null) {
                     cccd.value = BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE
+                    handshakePhase = 2
                     gatt.writeDescriptor(cccd)
+                } else {
+                    // No CCCD — some adapters go straight to writable
+                    finishHandshake()
                 }
             }
         }
@@ -119,14 +151,13 @@ class ElmBleManager(context: Context) {
         override fun onDescriptorWrite(
             gatt: BluetoothGatt, descriptor: BluetoothGattDescriptor, status: Int
         ) {
-            if (descriptor.uuid == CCCD_UUID && status == BluetoothGatt.GATT_SUCCESS) {
-                _connectionState.value = ConnectionState.CONNECTED
-                _reconnectCount.value = 0
-                _isReconnecting.value = false
-                Timber.i("Notifications enabled → device ready")
-                // Run ELM init
-                managerScope.launch { initializeElm() }
+            if (descriptor.uuid != CCCD_UUID) return
+            if (status != BluetoothGatt.GATT_SUCCESS) {
+                handshakeFailed("CCCD write failed status=$status")
+                return
             }
+            Timber.i("Notifications enabled → device ready")
+            finishHandshake()
         }
 
         override fun onCharacteristicChanged(
@@ -147,10 +178,73 @@ class ElmBleManager(context: Context) {
         }
     }
 
+    // Handshake watchdog: if the pipeline stalls in a phase, kill the connection
+    // so the caller doesn't hang forever.
+    private var watchdogJob: Job? = null
+    private fun startHandshakeWatchdog(gatt: BluetoothGatt) {
+        watchdogJob?.cancel()
+        watchdogJob = managerScope.launch {
+            // Phase 1: waiting for service discovery
+            val svcDeadline = System.currentTimeMillis() + serviceDiscoveryTimeoutMs
+            while (isActive && handshakePhase == 1) {
+                if (System.currentTimeMillis() > svcDeadline) {
+                    Timber.e("Handshake watchdog: service discovery timed out after ${serviceDiscoveryTimeoutMs}ms")
+                    handshakeFailed("Service discovery timed out")
+                    return@launch
+                }
+                delay(200)
+            }
+            // Phase 2: waiting for CCCD write
+            val descDeadline = System.currentTimeMillis() + descriptorWriteTimeoutMs
+            while (isActive && handshakePhase == 2) {
+                if (System.currentTimeMillis() > descDeadline) {
+                    Timber.e("Handshake watchdog: CCCD write timed out after ${descriptorWriteTimeoutMs}ms")
+                    handshakeFailed("Descriptor write timed out")
+                    return@launch
+                }
+                delay(200)
+            }
+        }
+    }
+
+    private fun cancelHandshakeWatchdog() {
+        watchdogJob?.cancel()
+        watchdogJob = null
+    }
+
+    private fun handshakeFailed(reason: String) {
+        Timber.e("Handshake failed: $reason")
+        cancelHandshakeWatchdog()
+        handshakePhase = 0
+        _connectionState.value = ConnectionState.DISCONNECTED
+        gatt?.disconnect()
+        // autoReconnect will kick in via onConnectionStateChange
+    }
+
+    private fun finishHandshake() {
+        cancelHandshakeWatchdog()
+        handshakePhase = 3
+        // Run ELM init with total budget
+        managerScope.launch {
+            try {
+                withTimeout(elmInitTotalTimeoutMs) {
+                    initializeElm()
+                }
+                handshakePhase = 0
+                _connectionState.value = ConnectionState.CONNECTED
+                _reconnectCount.value = 0
+                _isReconnecting.value = false
+            } catch (e: TimeoutCancellationException) {
+                Timber.e("ELM init timed out after ${elmInitTotalTimeoutMs}ms")
+                handshakeFailed("ELM init total timeout")
+            }
+        }
+    }
+
     /**
      * Connect to a specific BLE device.
      */
-    fun connectToDevice(device: BluetoothDevice) {
+    override fun connectToDevice(device: BluetoothDevice) {
         targetDevice = device
         autoReconnectEnabled = true
         _reconnectCount.value = 0
@@ -161,13 +255,27 @@ class ElmBleManager(context: Context) {
 
     private fun doConnect(device: BluetoothDevice) {
         _connectionState.value = ConnectionState.CONNECTING
+        handshakePhase = 0
         managerScope.launch {
             try {
-                Timber.i("Connecting to ${device.address}...")
+                Timber.i("Connecting GATT to ${device.address} (timeout=${gattConnectTimeoutMs}ms)...")
                 gatt?.close()
                 gatt = device.connectGatt(appContext, false, gattCallback)
+
+                // GATT connect timeout — if we never reach STATE_CONNECTED within budget
+                connectTimeoutJob?.cancel()
+                connectTimeoutJob = launch {
+                    delay(gattConnectTimeoutMs)
+                    if (_connectionState.value == ConnectionState.CONNECTING &&
+                        handshakePhase < 1
+                    ) {
+                        Timber.e("GATT connect timed out after ${gattConnectTimeoutMs}ms")
+                        handshakeFailed("GATT connect timeout")
+                    }
+                }
             } catch (e: Exception) {
                 Timber.e(e, "Connection error")
+                cancelHandshakeWatchdog()
                 _connectionState.value = ConnectionState.DISCONNECTED
                 if (autoReconnectEnabled) startAutoReconnect()
             }
@@ -180,7 +288,7 @@ class ElmBleManager(context: Context) {
     private suspend fun initializeElm() {
         val commands = listOf("ATZ", "ATE0", "ATL0", "ATS0", "ATH0", "ATSP0")
         for (cmd in commands) {
-            val resp = sendCommand(cmd, timeoutMs = 5000L)
+            val resp = sendCommand(cmd, timeoutMs = atCommandTimeoutMs)
             Timber.d("Init $cmd → ${resp ?: "TIMEOUT"}")
         }
         Timber.i("ELM initialization complete")
@@ -190,7 +298,7 @@ class ElmBleManager(context: Context) {
      * Send an OBD-II command string and wait for response.
      * @return response string (trimmed, no ">"), or null on timeout.
      */
-    suspend fun sendCommand(command: String, timeoutMs: Long = 3000L): String? {
+    override suspend fun sendCommand(command: String, timeoutMs: Long): String? {
         return withContext(Dispatchers.IO) {
             val g = gatt ?: return@withContext null
             val tx = txChar ?: return@withContext null
@@ -218,8 +326,8 @@ class ElmBleManager(context: Context) {
                 synchronized(responseLock) {
                     lastResponse.toString()
                         .replace(">", "")
-                        .replace("\\r", " ")
-                        .replace("\\n", " ")
+                        .replace("\r", " ")
+                        .replace("\n", " ")
                         .trim()
                 }
             }
@@ -227,18 +335,14 @@ class ElmBleManager(context: Context) {
         }
     }
 
-    /**
-     * Read an OBD-II PID value.
-     */
-    suspend fun readPid(pid: String): String? = sendCommand(pid)
-
     // ---- Auto-reconnect ----
 
-    fun enableAutoReconnect() { autoReconnectEnabled = true }
+    override fun enableAutoReconnect() { autoReconnectEnabled = true }
 
-    fun disableAutoReconnect() {
+    override fun disableAutoReconnect() {
         autoReconnectEnabled = false
         reconnectJob?.cancel()
+        connectTimeoutJob?.cancel()
         _isReconnecting.value = false
     }
 
@@ -264,8 +368,8 @@ class ElmBleManager(context: Context) {
 
                 try {
                     targetDevice?.let { doConnect(it) }
-                    // Wait up to 12s for connection
-                    val connected = withTimeoutOrNull(12_000L) {
+                    // Wait up to gattConnectTimeoutMs for full CONNECTED state
+                    val connected = withTimeoutOrNull(gattConnectTimeoutMs) {
                         connectionState.first { it == ConnectionState.CONNECTED }
                     }
                     if (connected != null) {
@@ -287,14 +391,16 @@ class ElmBleManager(context: Context) {
 
     // ---- Lifecycle ----
 
-    fun disconnect() {
+    override fun disconnect() {
         disableAutoReconnect()
         gatt?.disconnect()
     }
 
-    fun release() {
+    override fun release() {
         disableAutoReconnect()
         reconnectJob?.cancel()
+        connectTimeoutJob?.cancel()
+        cancelHandshakeWatchdog()
         managerScope.cancel()
         gatt?.close()
         gatt = null
