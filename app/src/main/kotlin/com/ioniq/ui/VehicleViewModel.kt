@@ -19,6 +19,7 @@ class VehicleViewModel(
     val connectionState: StateFlow<ObdTransport.ConnectionState> = repo.connectionState
     val isReconnecting: StateFlow<Boolean> = repo.isReconnecting
     val reconnectAttempts: StateFlow<Int> = repo.reconnectAttempts
+    val connectionError: StateFlow<String?> = repo.connectionError
     val vehicleState: StateFlow<VehicleTelemetry?> = repo.vehicleState
     val pairedClassicDevices: StateFlow<List<BluetoothDevice>> = repo.pairedClassicDevices
 
@@ -28,7 +29,9 @@ class VehicleViewModel(
     fun disconnect() = repo.disconnect()
     fun refreshPairedDevices() = repo.refreshPairedDevices()
     fun pairClassic(device: BluetoothDevice): Boolean = repo.pair(device)
-    fun clearScanError() = repo.let { /* BleScanner handles this internally */ }
+    fun clearScanError() {
+        repo.clearConnectionError()
+    }
 
     override fun onCleared() {
         super.onCleared()

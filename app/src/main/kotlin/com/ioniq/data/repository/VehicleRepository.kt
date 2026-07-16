@@ -58,6 +58,13 @@ class VehicleRepository(private val context: Context) {
     private val _reconnectAttempts = MutableStateFlow(0)
     val reconnectAttempts: StateFlow<Int> = _reconnectAttempts.asStateFlow()
 
+    private val _connectionError = MutableStateFlow<String?>(null)
+    val connectionError: StateFlow<String?> = _connectionError.asStateFlow()
+
+    fun clearConnectionError() {
+        _connectionError.value = null
+    }
+
     val connectedTransportName: StateFlow<String?>
         get() = MutableStateFlow(transport?.let {
             if (it is com.ioniq.ble.ElmBleManager) "BLE" else "Classic RFCOMM"
@@ -81,11 +88,31 @@ class VehicleRepository(private val context: Context) {
     fun connect(device: BluetoothDevice, hint: TransportHint) {
         // Tear down any previous transport first
         disconnect()
+        _connectionError.value = null
 
-        val t = ObdTransportFactory.create(context, device, hint)
-        transport = t
-        mirrorTransportState(t)
-        t.connectToDevice(device)
+        val t = try {
+            val created = ObdTransportFactory.create(context, device, hint)
+            transport = created
+            mirrorTransportState(created)
+            created
+        } catch (e: Throwable) {
+            Timber.e(e, "Failed to create transport for ${device.address}")
+            _connectionError.value = "Failed to initialize connection: ${e.message}"
+            _connectionState.value = ObdTransport.ConnectionState.DISCONNECTED
+            return
+        }
+
+        try {
+            t.connectToDevice(device)
+        } catch (e: SecurityException) {
+            Timber.e(e, "Permission denied connecting to ${device.address}")
+            _connectionError.value = "Bluetooth permission denied"
+            _connectionState.value = ObdTransport.ConnectionState.DISCONNECTED
+        } catch (e: Throwable) {
+            Timber.e(e, "Exception connecting to ${device.address}")
+            _connectionError.value = "Connection failed: ${e.message ?: "unknown error"}"
+            _connectionState.value = ObdTransport.ConnectionState.DISCONNECTED
+        }
 
         // Start polling when connected
         connectionState

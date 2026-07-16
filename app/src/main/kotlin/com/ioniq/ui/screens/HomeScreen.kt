@@ -113,14 +113,6 @@ fun HomeScreen(
     val context = LocalContext.current
     val telemetry = vehicleState  // vehicleState IS the telemetry data class
 
-    // ── Settings Overlay ──
-    if (showSettings) {
-        SettingsOverlay(
-            telemetry = telemetry,
-            onDismiss = { showSettings = false }
-        )
-    }
-
     androidx.compose.material3.Scaffold(
         topBar = {
             androidx.compose.material3.TopAppBar(
@@ -133,6 +125,15 @@ fun HomeScreen(
             )
         }
     ) { padding ->
+
+    // ── Settings Overlay (inside Scaffold so it renders on top) ──
+    if (showSettings) {
+        SettingsOverlay(
+            telemetry = telemetry,
+            onDismiss = { showSettings = false }
+        )
+    }
+
         LazyColumn(
             modifier = Modifier
             .padding(padding)
