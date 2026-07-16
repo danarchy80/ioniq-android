@@ -87,48 +87,101 @@ class ElmClassicManager(context: Context) : ObdTransport {
                     bm.adapter?.cancelDiscovery()
                 } catch (_: Exception) {}
 
-                val sock = try {
-                    device.createRfcommSocketToServiceRecord(SPP_UUID)
-                } catch (e: Exception) {
-                    Timber.w(e, "createRfcommSocketToServiceRecord failed, trying fallback")
-                    // Some adapters need the insecure fallback
-                    @Suppress("DEPRECATION")
-                    device.createInsecureRfcommSocketToServiceRecord(SPP_UUID)
-                }
-                socket = sock
+                // Wait a moment for discovery cancellation to propagate
+                delay(500)
 
-                val connected = withTimeoutOrNull(rfcConnectTimeoutMs) {
-                    try {
-                        sock.connect()
-                        true
+                // Step 1: Fetch SDP UUIDs to warm the cache (critical on many devices)
+                try {
+                    Timber.i("Fetching SDP UUIDs from device...")
+                    val found = device.fetchUuidsWithSdp()
+                    val uuids = device.uuids
+                    Timber.i("SDP fetch result: $found, cached UUIDs: ${uuids?.joinToString() ?: "null"}")
+                } catch (e: Exception) {
+                    Timber.w(e, "fetchUuidsWithSdp failed (non-fatal)")
+                }
+
+                // Step 2: Try primary socket (secure RFCOMM with SPP UUID)
+                var connected = false
+                var activeSocket: BluetoothSocket? = null
+
+                // Try multiple times with small delays — some adapters need a moment
+                for (attempt in 1..3) {
+                    if (connected) break
+                    Timber.i("Primary RFCOMM connect attempt $attempt...")
+                    delay(if (attempt > 1) 1000L else 0L)
+
+                    val sock = try {
+                        device.createRfcommSocketToServiceRecord(SPP_UUID)
                     } catch (e: Exception) {
-                        Timber.w(e, "RFCOMM connect via primary failed, trying fallback")
+                        Timber.w(e, "createRfcommSocketToServiceRecord failed, trying insecure variant")
                         try {
-                            sock.close()
-                        } catch (_: Exception) {}
-                        // Fallback: insecure socket
-                        val fallback = device::class.java
-                            .getMethod("createRfcommSocket", Int::class.javaPrimitiveType)
-                            .invoke(device, 1) as BluetoothSocket
-                        try {
-                            fallback.connect()
-                            socket = fallback
-                            true
+                            device.createInsecureRfcommSocketToServiceRecord(SPP_UUID)
                         } catch (e2: Exception) {
-                            Timber.e(e2, "Fallback RFCOMM connect also failed")
-                            false
+                            Timber.e(e2, "Both secure and insecure socket creation failed")
+                            null
+                        }
+                    }
+
+                    if (sock != null) {
+                        activeSocket = sock
+                        try {
+                            // Cancel discovery again right before connect
+                            try {
+                                val bm = appContext.getSystemService(Context.BLUETOOTH_SERVICE) as android.bluetooth.BluetoothManager
+                                bm.adapter?.cancelDiscovery()
+                            } catch (_: Exception) {}
+
+                            sock.connect()
+                            connected = true
+                            Timber.i("Primary RFCOMM connect succeeded on attempt $attempt")
+                        } catch (e: Exception) {
+                            Timber.w(e, "Primary RFCOMM connect attempt $attempt failed: ${e.message}")
+                            try { sock.close() } catch (_: Exception) {}
                         }
                     }
                 }
 
-                if (connected != true) {
-                    Timber.e("RFCOMM connect timed out after ${rfcConnectTimeoutMs}ms")
+                // Step 3: If primary failed, try insecure + reflection fallback with multiple channels
+                if (!connected) {
+                    Timber.i("Primary attempts exhausted, trying reflection fallback across channels 1-5...")
+                    // Channels commonly used by ELM327 adapters
+                    for (channel in listOf(1)) {
+                        if (connected) break
+                        Timber.i("Reflection fallback: channel $channel")
+                        try {
+                            val method = device::class.java.getMethod("createRfcommSocket", Int::class.javaPrimitiveType)
+                            val fallback = method.invoke(device, channel) as BluetoothSocket
+                            activeSocket = fallback
+                            
+                            // Cancel discovery right before fallback connect too
+                            try {
+                                val bm = appContext.getSystemService(Context.BLUETOOTH_SERVICE) as android.bluetooth.BluetoothManager
+                                bm.adapter?.cancelDiscovery()
+                            } catch (_: Exception) {}
+                            delay(200)
+                            
+                            fallback.connect()
+                            connected = true
+                            Timber.i("Reflection fallback connect succeeded on channel $channel")
+                        } catch (e: Exception) {
+                            Timber.w(e, "Reflection fallback channel $channel failed: ${e.message}")
+                            try { activeSocket?.close() } catch (_: Exception) {}
+                            activeSocket = null
+                        }
+                    }
+                }
+
+                if (!connected) {
+                    Timber.e("All RFCOMM connect attempts failed after ${rfcConnectTimeoutMs}ms")
+                    Timber.e("Suggestions: unpair/re-pair ${device.name ?: device.address}, power-cycle the OBD adapter, or check if another app holds the connection")
                     cleanupSocket()
                     _connectionState.value = ConnectionState.DISCONNECTED
                     if (autoReconnectEnabled) startAutoReconnect()
                     return@launch
                 }
 
+                val sock = activeSocket!!
+                socket = sock
                 Timber.i("RFCOMM socket connected, starting reader thread + ELM init")
                 input = sock.inputStream
                 output = sock.outputStream
