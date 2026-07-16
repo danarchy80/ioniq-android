@@ -185,82 +185,95 @@ class VehicleRepository(private val context: Context) {
 
             while (isActive && t.connectionState.value == ObdTransport.ConnectionState.CONNECTED) {
 
-                val now = Instant.now().toEpochMilli()
-                val soc = t.readPid(ObdPids.SOC_DISPLAY)?.let { ObdParser.parseSoc(it) }
-                val voltage = t.readPid(ObdPids.PACK_VOLTAGE)?.let { ObdParser.parseBatteryVoltage(it) }
-                val current = t.readPid(ObdPids.PACK_CURRENT)?.let { ObdParser.parseBatteryCurrent(it) }
-                val battTempMax = t.readPid(ObdPids.BATTERY_TEMP)?.let {
-                    ObdParser.parseBatteryTemp(it).maxOrNull()
-                }
-                val inletTemp = t.readPid(ObdPids.INLET_TEMP)?.let { ObdParser.parseInletTemp(it) }
-                val ambientTemp = t.readPid(ObdPids.AMBIENT_TEMP)?.let { ObdParser.parseAmbientTemp(it) }
-                val chargingState = t.readPid(ObdPids.CHARGING_STATE)?.let { ObdParser.parseChargingState(it) } ?: com.ioniq.data.model.ChargingState.NOT_CHARGING
-
-                // Slow-poll fields every 5th cycle
-                var cumCharge: Float? = null
-                var cumDischarge: Float? = null
-                var cellMin: Int? = null
-                var cellMax: Int? = null
-                var cellVoltages: List<CellReading>? = null
-
-                if (slowTick % 5 == 0) {
-                    cumCharge = t.readPid(ObdPids.CUMULATIVE_ENERGY_CHARGED)?.let {
-                        ObdParser.parseCumulativeEnergy(it)
+                try {
+                    val now = Instant.now().toEpochMilli()
+                    val soc = t.readPid(ObdPids.SOC_DISPLAY)?.let { ObdParser.parseSoc(it) }
+                    val voltage = t.readPid(ObdPids.PACK_VOLTAGE)?.let { ObdParser.parseBatteryVoltage(it) }
+                    val current = t.readPid(ObdPids.PACK_CURRENT)?.let { ObdParser.parseBatteryCurrent(it) }
+                    val battTempMax = t.readPid(ObdPids.BATTERY_TEMP)?.let {
+                        ObdParser.parseBatteryTemp(it).maxOrNull()
                     }
-                    cumDischarge = t.readPid(ObdPids.CUMULATIVE_ENERGY_DISCHARGED)?.let {
-                        ObdParser.parseCumulativeEnergy(it)
-                    }
-                    val cellData = t.readPid(ObdPids.CELL_VOLTAGES)?.let {
-                        ObdParser.parseCellVoltages(now, 0, it)
-                    }
-                    cellVoltages = cellData
-                    cellMin = cellData?.minOfOrNull { it.voltage }?.toInt()
-                    cellMax = cellData?.maxOfOrNull { it.voltage }?.toInt()
-                }
+                    val inletTemp = t.readPid(ObdPids.INLET_TEMP)?.let { ObdParser.parseInletTemp(it) }
+                    val ambientTemp = t.readPid(ObdPids.AMBIENT_TEMP)?.let { ObdParser.parseAmbientTemp(it) }
+                    val chargingState = t.readPid(ObdPids.CHARGING_STATE)?.let { ObdParser.parseChargingState(it) } ?: com.ioniq.data.model.ChargingState.NOT_CHARGING
 
-                val telemetry = VehicleTelemetry(
-                    id = 0,
-                    timestamp = now,
-                    soc = soc,
-                    batteryVoltage = voltage,
-                    batteryCurrent = current,
-                    batteryTempMax = battTempMax,
-                    inletTemp = inletTemp,
-                    ambientTemp = ambientTemp,
-                    chargingState = chargingState,
-                    cumulativeEnergyCharged = cumCharge,
-                    cumulativeEnergyDischarged = cumDischarge,
-                    cellVoltageMin = cellMin,
-                    cellVoltageMax = cellMax
-                )
+                    // Slow-poll fields every 5th cycle
+                    var cumCharge: Float? = null
+                    var cumDischarge: Float? = null
+                    var cellMin: Int? = null
+                    var cellMax: Int? = null
+                    var cellVoltages: List<CellReading>? = null
 
-                // Detect unresponsive adapter: all critical PIDs returned null
-                val allFailed = soc == null && voltage == null && current == null && battTempMax == null
-                if (allFailed) {
+                    if (slowTick % 5 == 0) {
+                        cumCharge = t.readPid(ObdPids.CUMULATIVE_ENERGY_CHARGED)?.let {
+                            ObdParser.parseCumulativeEnergy(it)
+                        }
+                        cumDischarge = t.readPid(ObdPids.CUMULATIVE_ENERGY_DISCHARGED)?.let {
+                            ObdParser.parseCumulativeEnergy(it)
+                        }
+                        val cellData = t.readPid(ObdPids.CELL_VOLTAGES)?.let {
+                            ObdParser.parseCellVoltages(now, 0, it)
+                        }
+                        cellVoltages = cellData
+                        cellMin = cellData?.minOfOrNull { it.voltage }?.toInt()
+                        cellMax = cellData?.maxOfOrNull { it.voltage }?.toInt()
+                    }
+
+                    val telemetry = VehicleTelemetry(
+                        id = 0,
+                        timestamp = now,
+                        soc = soc,
+                        batteryVoltage = voltage,
+                        batteryCurrent = current,
+                        batteryTempMax = battTempMax,
+                        inletTemp = inletTemp,
+                        ambientTemp = ambientTemp,
+                        chargingState = chargingState,
+                        cumulativeEnergyCharged = cumCharge,
+                        cumulativeEnergyDischarged = cumDischarge,
+                        cellVoltageMin = cellMin,
+                        cellVoltageMax = cellMax
+                    )
+
+                    // Detect unresponsive adapter: all critical PIDs returned null
+                    val allFailed = soc == null && voltage == null && current == null && battTempMax == null
+                    if (allFailed) {
+                        consecutiveFailures++
+                        Timber.w("Poll cycle ${consecutiveFailures}/$maxFailures: all PID reads returned null")
+                        if (consecutiveFailures >= maxFailures) {
+                            Timber.e("Max failures reached ($maxFailures) — disconnecting unresponsive device")
+                            t.disconnect()
+                            break
+                        }
+                    } else {
+                        if (consecutiveFailures > 0) Timber.i("Recovered after $consecutiveFailures null cycles")
+                        consecutiveFailures = 0
+                    }
+
+                    // Persist to Room
+                    val rowId = telemetryDao.insert(telemetry)
+                    cellVoltages?.forEach { cell ->
+                        cellReadingDao.insert(cell.copy(telemetryId = rowId))
+                    }
+
+                    _vehicleState.value = telemetry
+
+                    // Push to Home Assistant
+                    haClient?.pushTelemetry(telemetry)
+
+                    slowTick++
+
+                } catch (e: kotlinx.coroutines.CancellationException) {
+                    throw e // propagate cancellation normally
+                } catch (e: Exception) {
+                    Timber.e(e, "Poll cycle exception: ${e::class.simpleName}: ${e.message}")
                     consecutiveFailures++
-                    Timber.w("Poll cycle ${consecutiveFailures}/$maxFailures: all PID reads returned null")
                     if (consecutiveFailures >= maxFailures) {
-                        Timber.e("Max failures reached ($maxFailures) — disconnecting unresponsive device")
-                        t.disconnect()
+                        Timber.e("Max poll errors ($maxFailures) — disconnecting")
+                        try { t.disconnect() } catch (_: Exception) {}
                         break
                     }
-                } else {
-                    if (consecutiveFailures > 0) Timber.i("Recovered after $consecutiveFailures null cycles")
-                    consecutiveFailures = 0
                 }
-
-                // Persist to Room
-                val rowId = telemetryDao.insert(telemetry)
-                cellVoltages?.forEach { cell ->
-                    cellReadingDao.insert(cell.copy(telemetryId = rowId))
-                }
-
-                _vehicleState.value = telemetry
-
-                // Push to Home Assistant
-                haClient?.pushTelemetry(telemetry)
-
-                slowTick++
 
                 // Poll interval: 2s between cycles
                 delay(2000L)
