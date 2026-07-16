@@ -107,7 +107,7 @@ class ElmBleManager(context: Context) : ObdTransport {
                     _connectionState.value = ConnectionState.DISCONNECTED
                     _isReconnecting.value = false
                     handshakePhase = 0
-                    gatt.close()
+                    try { gatt.close() } catch (_: Throwable) { /* ignore */ }
                     this@ElmBleManager.gatt = null
                     txChar = null
                     rxChar = null
@@ -250,17 +250,43 @@ class ElmBleManager(context: Context) : ObdTransport {
         _reconnectCount.value = 0
         _isReconnecting.value = false
         reconnectJob?.cancel()
-        doConnect(device)
+        // Pre-flight: if Bluetooth is off, don't attempt — will crash in native stack
+        val adapter = android.bluetooth.BluetoothAdapter.getDefaultAdapter()
+        if (adapter == null || !adapter.isEnabled) {
+            Timber.w("Bluetooth adapter off — deferring GATT connect to ${device.address}")
+            _connectionState.value = ConnectionState.DISCONNECTED
+            return
+        }
+        try {
+            doConnect(device)
+        } catch (t: Throwable) {
+            Timber.e(t, "connectToDevice failed for ${device.address}")
+            _connectionState.value = ConnectionState.DISCONNECTED
+        }
     }
 
     private fun doConnect(device: BluetoothDevice) {
+        // Pre-flight: if Bluetooth is off, don't attempt — native stack can crash
+        val adapter = android.bluetooth.BluetoothAdapter.getDefaultAdapter()
+        if (adapter == null || !adapter.isEnabled) {
+            Timber.w("Bluetooth adapter off — skipping GATT connect to ${device.address}")
+            _connectionState.value = ConnectionState.DISCONNECTED
+            return
+        }
         _connectionState.value = ConnectionState.CONNECTING
         handshakePhase = 0
         managerScope.launch {
             try {
                 Timber.i("Connecting GATT to ${device.address} (timeout=${gattConnectTimeoutMs}ms)...")
-                gatt?.close()
+                try { gatt?.close() } catch (t: Throwable) { Timber.w(t, "gatt.close() failed") }
                 gatt = device.connectGatt(appContext, false, gattCallback)
+
+                if (gatt == null) {
+                    Timber.e("connectGatt returned null for ${device.address}")
+                    _connectionState.value = ConnectionState.DISCONNECTED
+                    if (autoReconnectEnabled) startAutoReconnect()
+                    return@launch
+                }
 
                 // GATT connect timeout — if we never reach STATE_CONNECTED within budget
                 connectTimeoutJob?.cancel()
@@ -273,8 +299,10 @@ class ElmBleManager(context: Context) : ObdTransport {
                         handshakeFailed("GATT connect timeout")
                     }
                 }
-            } catch (e: Exception) {
-                Timber.e(e, "Connection error")
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (t: Throwable) {
+                Timber.e(t, "Connection error")
                 cancelHandshakeWatchdog()
                 _connectionState.value = ConnectionState.DISCONNECTED
                 if (autoReconnectEnabled) startAutoReconnect()
@@ -379,8 +407,8 @@ class ElmBleManager(context: Context) : ObdTransport {
                     }
                 } catch (e: CancellationException) {
                     throw e
-                } catch (e: Exception) {
-                    Timber.w(e, "Reconnect attempt $attempt failed")
+                } catch (t: Throwable) {
+                    Timber.w(t, "Reconnect attempt $attempt failed")
                 }
             }
 

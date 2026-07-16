@@ -126,17 +126,11 @@ fun HomeScreen(
         }
     ) { padding ->
 
-    // ── Settings Overlay (inside Scaffold so it renders on top) ──
-    if (showSettings) {
-        SettingsOverlay(
-            telemetry = telemetry,
-            onDismiss = { showSettings = false }
-        )
-    }
+    // ── Box ensures overlay renders ON TOP of all content ──
+    Box(modifier = Modifier.padding(padding)) {
 
         LazyColumn(
             modifier = Modifier
-            .padding(padding)
             .fillMaxSize()
             .padding(horizontal = 16.dp, vertical = 12.dp),
         verticalArrangement = Arrangement.spacedBy(16.dp)
@@ -177,19 +171,31 @@ fun HomeScreen(
             }
         }
     }
+
+    // ── Settings Overlay (rendered last in Box → on top of everything) ──
+    if (showSettings) {
+        SettingsOverlay(
+            onDismiss = { showSettings = false }
+        )
     }
+
+    }  // Box
+    }  // Scaffold
 }
 
 // ─────────────────────────── Settings Overlay ───────────────────────────
 
 @Composable
 fun SettingsOverlay(
-    telemetry: VehicleTelemetry?,
     onDismiss: () -> Unit
 ) {
+    val context = LocalContext.current
+    val logLines = remember { com.ioniq.diag.LogBuffer.drain() }
+
     Surface(
         modifier = Modifier.fillMaxSize(),
-        color = Color(0xE6000000)
+        color = Color(0xFF0D1117),
+        contentColor = Color.White
     ) {
         Column(
             modifier = Modifier
@@ -200,10 +206,10 @@ fun SettingsOverlay(
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = androidx.compose.ui.Alignment.CenterVertically
+                verticalAlignment = Alignment.CenterVertically
             ) {
                 Text(
-                    "Vehicle Info",
+                    "Diagnostics",
                     style = MaterialTheme.typography.titleLarge,
                     fontWeight = FontWeight.Bold,
                     color = Color.White
@@ -217,34 +223,98 @@ fun SettingsOverlay(
                 }
             }
 
+            // ── Device summary card ──
             Surface(
                 color = Color(0xFF1A2738),
-                shape = RoundedCornerShape(16.dp),
+                shape = RoundedCornerShape(12.dp),
                 modifier = Modifier.fillMaxWidth()
             ) {
                 Column(
-                    modifier = Modifier.padding(16.dp),
-                    verticalArrangement = Arrangement.spacedBy(10.dp)
+                    modifier = Modifier.padding(14.dp),
+                    verticalArrangement = Arrangement.spacedBy(6.dp)
                 ) {
-                    StatRow("State of Charge", fmtPct(telemetry?.soc))
-                    StatRow("State of Health", fmtPct(telemetry?.soh))
-                    StatRow("Pack Voltage", fmtVolt(telemetry?.batteryVoltage))
-                    StatRow("Pack Current", fmtAmp(telemetry?.batteryCurrent))
-                    StatRow("Charge Power", fmtKw(telemetry?.chargePower))
-                    StatRow("Battery Min Temp", fmtTemp(telemetry?.batteryTempMin))
-                    StatRow("Battery Max Temp", fmtTemp(telemetry?.batteryTempMax))
-                    StatRow("Inlet Temp", fmtTemp(telemetry?.inletTemp))
-                    StatRow("Ambient Temp", fmtTemp(telemetry?.ambientTemp))
-                    StatRow("Min Cell", fmtMv(telemetry?.cellVoltageMin))
-                    StatRow("Max Cell", fmtMv(telemetry?.cellVoltageMax))
-                    StatRow("Odometer", fmtKm(telemetry?.odometer))
-                    StatRow("Energy Charged", fmtKwh(telemetry?.cumulativeEnergyCharged))
-                    StatRow("Energy Discharged", fmtKwh(telemetry?.cumulativeEnergyDischarged))
-                    StatRow("Charging State", telemetry?.chargingState?.name ?: "—")
+                    StatRow("Device", "${android.os.Build.MANUFACTURER} ${android.os.Build.MODEL}")
+                    StatRow("Android", "${android.os.Build.VERSION.RELEASE} (API ${android.os.Build.VERSION.SDK_INT})")
+                    StatRow("App", "${com.ioniq.BuildConfig.VERSION_NAME} (${com.ioniq.BuildConfig.VERSION_CODE})")
+                    @Suppress("DEPRECATION")
+                    val btEnabled = try {
+                        android.bluetooth.BluetoothAdapter.getDefaultAdapter()?.isEnabled == true
+                    } catch (_: Exception) { false }
+                    StatRow("Bluetooth", if (btEnabled) "On" else "Off")
+                    StatRow("Log lines", "${logLines.size}")
                 }
             }
 
-            SupportEmailButton(telemetry)
+            // ── Recent log scrollable panel ──
+            Surface(
+                color = Color(0xFF111820),
+                shape = RoundedCornerShape(12.dp),
+                modifier = Modifier.weight(1f).fillMaxWidth()
+            ) {
+                if (logLines.isEmpty()) {
+                    Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                        Text("No log entries yet.", color = ChipLabel)
+                    }
+                } else {
+                    LazyColumn(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .padding(10.dp),
+                        verticalArrangement = Arrangement.spacedBy(2.dp)
+                    ) {
+                        items(logLines.reversed()) { line ->
+                            Text(
+                                line,
+                                color = Color(0xFFB0BEC5),
+                                fontSize = 11.sp,
+                                fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace
+                            )
+                        }
+                    }
+                }
+            }
+
+            // ── Action buttons ──
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                OutlinedButton(
+                    onClick = {
+                        try {
+                            val activity = context as? android.app.Activity
+                            activity?.let {
+                                val intent = Intent(Intent.ACTION_VIEW).apply {
+                                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                                }
+                                // Open BT settings
+                                @Suppress("DEPRECATION")
+                                it.startActivity(Intent(Settings.ACTION_BLUETOOTH_SETTINGS).apply {
+                                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                                })
+                            }
+                        } catch (_: Exception) {}
+                    },
+                    modifier = Modifier.weight(1f),
+                    shape = RoundedCornerShape(12.dp)
+                ) {
+                    Icon(Icons.Default.Bluetooth, contentDescription = null, modifier = Modifier.size(16.dp))
+                    Spacer(Modifier.width(6.dp))
+                    Text("BT Settings", fontSize = 13.sp)
+                }
+
+                OutlinedButton(
+                    onClick = {
+                        com.ioniq.diag.SupportEmailSender.launch(context)
+                    },
+                    modifier = Modifier.weight(1f),
+                    shape = RoundedCornerShape(12.dp)
+                ) {
+                    Icon(Icons.Default.Email, contentDescription = null, modifier = Modifier.size(16.dp))
+                    Spacer(Modifier.width(6.dp))
+                    Text("Send Email", fontSize = 13.sp)
+                }
+            }
         }
     }
 }
