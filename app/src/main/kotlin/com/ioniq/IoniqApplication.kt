@@ -9,6 +9,7 @@ import timber.log.Timber
  * Ioniq Application
  *
  * Initializes:
+ * - Log buffer with disk persistence (survives crashes — previous run logs recoverable)
  * - Timber logging (includes ring-buffer capture for support emails)
  * - Custom WorkManager configuration
  */
@@ -16,7 +17,8 @@ class IoniqApplication : Application(), Configuration.Provider {
 
     override fun onCreate() {
         super.onCreate()
-        // Always capture logs to the ring buffer (works in debug + release)
+        // Initialize log buffer with disk persistence BEFORE planting Timber
+        LogBuffer.initialize(this)
         Timber.plant(LogBuffer.TimberTree())
         if (BuildConfig.DEBUG) {
             Timber.plant(Timber.DebugTree())

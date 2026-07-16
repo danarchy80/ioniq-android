@@ -18,6 +18,7 @@ import java.io.InputStreamReader
 /**
  * Collects all diagnostic data for a support email:
  * - Recent in-app log buffer
+ * - Previous run's logs (from disk — survives crashes)
  * - logcat dump (app-only, no root required)
  * - Device snapshot (model, OS, BT state, battery, connectivity)
  * - Latest telemetry snapshot
@@ -97,6 +98,15 @@ object SupportEmailCollector {
 
         sb.appendSection("APP LOG BUFFER (last ${LogBuffer.drain().size} lines)") {
             LogBuffer.drain().forEach { line(it, "") }
+        }
+
+        // Include previous run's logs so we can see what happened before a crash
+        val previousLogs = LogBuffer.getPreviousRunLogs(context)
+        if (previousLogs != null) {
+            sb.appendSection("PREVIOUS RUN LOGS (${previousLogs.size} lines)") {
+                line("--- Previous session logs ---", "")
+                previousLogs?.forEach { line(it, "") }
+            }
         }
 
         sb.appendSection("LOGCAT (last 100 lines)") {
