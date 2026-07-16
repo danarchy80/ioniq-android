@@ -44,17 +44,32 @@ object SupportEmailSender {
 
         val fullBody = buildEmailBody(body)
 
-        val intent = Intent(Intent.ACTION_SENDTO).apply {
-            data = Uri.parse("mailto:$destination")
+        val intent = Intent(Intent.ACTION_SEND).apply {
+            type = "message/rfc822"
             putExtra(Intent.EXTRA_EMAIL, arrayOf(destination))
             putExtra(Intent.EXTRA_SUBJECT, SUBJECT)
             putExtra(Intent.EXTRA_TEXT, fullBody)
             addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
         }
 
+        // Try sending directly first, fall back to chooser if multiple apps available
         return if (intent.resolveActivity(context.packageManager) != null) {
-            context.startActivity(intent)
-            Result.EmailClientLaunched
+            try {
+                context.startActivity(intent)
+                Result.EmailClientLaunched
+            } catch (e: Exception) {
+                Timber.w(e, "Email launch failed, trying chooser")
+                val chooser = Intent.createChooser(intent, "Send support email").apply {
+                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                }
+                try {
+                    context.startActivity(chooser)
+                    Result.EmailClientLaunched
+                } catch (e2: Exception) {
+                    Timber.e(e2, "All email attempts failed — copying diagnostics to clipboard")
+                    copyToClipboard(context, destination, fullBody)
+                }
+            }
         } else {
             Timber.w("No email client available — copying diagnostics to clipboard")
             copyToClipboard(context, destination, fullBody)

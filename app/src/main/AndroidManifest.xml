@@ -29,6 +29,26 @@
     <!-- Features -->
     <uses-feature android:name="android.hardware.bluetooth_le" android:required="true" />
 
+    <!--
+        Android 11+ package visibility: declare that we query for email clients.
+        Without this, resolveActivity() / queryIntentActivities() return null for Gmail
+        even when it is installed, and the support email button appears "broken".
+        Reference: https://developer.android.com/training/package-visibility
+    -->
+    <queries>
+        <intent>
+            <action android:name="android.intent.action.SENDTO" />
+            <data android:scheme="mailto" />
+        </intent>
+        <intent>
+            <action android:name="android.intent.action.SEND" />
+            <data android:mimeType="message/rfc822" />
+        </intent>
+        <!-- Explicit Gmail visibility (in case filter matching fails on some ROMs) -->
+        <package android:name="com.google.android.gm" />
+        <package android:name="com.google.android.gm.lite" />
+    </queries>
+
     <application
         android:name=".IoniqApplication"
         android:allowBackup="true"
