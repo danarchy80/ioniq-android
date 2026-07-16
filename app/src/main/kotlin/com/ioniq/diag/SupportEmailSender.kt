@@ -52,26 +52,24 @@ object SupportEmailSender {
             addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
         }
 
-        // Try sending directly first, fall back to chooser if multiple apps available
-        return if (intent.resolveActivity(context.packageManager) != null) {
-            try {
-                context.startActivity(intent)
-                Result.EmailClientLaunched
-            } catch (e: Exception) {
-                Timber.w(e, "Email launch failed, trying chooser")
-                val chooser = Intent.createChooser(intent, "Send support email").apply {
-                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                }
-                try {
-                    context.startActivity(chooser)
-                    Result.EmailClientLaunched
-                } catch (e2: Exception) {
-                    Timber.e(e2, "All email attempts failed — copying diagnostics to clipboard")
-                    copyToClipboard(context, destination, fullBody)
-                }
-            }
-        } else {
-            Timber.w("No email client available — copying diagnostics to clipboard")
+        // On API 30+, resolveActivity() is unreliable even with <queries> declared.
+        // Use the chooser directly — it resolves handlers independently and works on
+        // all ROMs. Fall through to clipboard only if the chooser itself fails.
+        val chooser = Intent.createChooser(intent, "Send support email via…").apply {
+            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        }
+
+        return try {
+            context.startActivity(chooser)
+            Result.EmailClientLaunched
+        } catch (e: android.content.ActivityNotFoundException) {
+            // Truly no email-capable app installed
+            Timber.w(e, "No email client available — copying diagnostics to clipboard")
+            copyToClipboard(context, destination, fullBody)
+        } catch (e: Exception) {
+            // User cancelled chooser or other transient failure
+            Timber.w(e, "Email chooser dismissed or failed")
             copyToClipboard(context, destination, fullBody)
         }
     }
