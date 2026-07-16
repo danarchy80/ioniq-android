@@ -61,24 +61,46 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        setContent {
-            IoniqTheme {
-                Surface(
-                    modifier = Modifier.fillMaxSize(),
-                    color = MaterialTheme.colorScheme.background
-                ) {
-                    HomeScreen(viewModel, _bluetoothReady, ::requestBlePermissions)
+        Timber.i("=== MainActivity.onCreate START ===")
+        Timber.i("Device: ${Build.MANUFACTURER} ${Build.MODEL}, Android ${Build.VERSION.SDK_INT}")
+        
+        try {
+            Timber.i("Creating Repository...")
+            val repo = VehicleRepository(this)
+            
+            Timber.i("Creating ViewModel...")
+            val vm = VehicleViewModel(repo)
+            
+            Timber.i("Setting Compose content...")
+            setContent {
+                Timber.i("Compose content executing")
+                IoniqTheme {
+                    Timber.i("Inside IoniqTheme")
+                    Surface(
+                        modifier = Modifier.fillMaxSize(),
+                        color = MaterialTheme.colorScheme.background
+                    ) {
+                        Timber.i("Inside Surface, about to create HomeScreen")
+                        HomeScreen(viewModel, _bluetoothReady, ::requestBlePermissions)
+                        Timber.i("HomeScreen created successfully")
+                    }
                 }
             }
+            Timber.i("=== MainActivity.onCreate COMPLETE ===")
+        } catch (e: Exception) {
+            Timber.e(e, "CRASH during MainActivity.onCreate:")
+            throw e
         }
     }
 
     override fun onStart() {
         super.onStart()
+        Timber.i("MainActivity.onStart")
         requestBlePermissions()
     }
 
     fun requestBlePermissions() {
+        Timber.i("requestBlePermissions called, SDK=${Build.VERSION.SDK_INT}")
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
             // Android 12+ requires runtime BLE permissions
             val perms = arrayOf(
@@ -88,16 +110,21 @@ class MainActivity : ComponentActivity() {
             )
 
             val needsRequest = perms.any {
+                Timber.d("Checking permission $it: ${checkSelfPermission(it)}")
                 checkSelfPermission(it) != PackageManager.PERMISSION_GRANTED
             }
 
+            Timber.i("Checking if permissions needed: $needsRequest")
             if (needsRequest) {
+                Timber.i("Launching permission request for: ${perms.joinToString()}")
                 blePermissionLauncher.launch(perms)
             } else {
+                Timber.i("All permissions already granted")
                 checkBluetoothEnabled()
             }
         } else {
             // Pre-Android 12: only location needed
+            Timber.i("Pre-Android 12 path")
             if (checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION) != PackageManager.PERMISSION_GRANTED) {
                 blePermissionLauncher.launch(arrayOf(Manifest.permission.ACCESS_FINE_LOCATION))
             } else {
@@ -107,6 +134,7 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun checkBluetoothEnabled() {
+        Timber.i("checkBluetoothEnabled")
         val adapter = getSystemService(BluetoothManager::class.java)?.adapter
         when {
             adapter == null -> {
@@ -118,6 +146,7 @@ class MainActivity : ComponentActivity() {
                 enableBtLauncher.launch(Intent(BluetoothAdapter.ACTION_REQUEST_ENABLE))
             }
             else -> {
+                Timber.i("Bluetooth is enabled and ready")
                 _bluetoothReady.value = true
             }
         }
