@@ -153,6 +153,8 @@ class VehicleRepository(private val context: Context) {
 
             // Slow poll: cumulative energy stats (every 5th cycle)
             var slowTick = 0
+            var consecutiveFailures = 0
+            val maxFailures = 10
 
             while (isActive && t.connectionState.value == ObdTransport.ConnectionState.CONNECTED) {
 
@@ -204,6 +206,21 @@ class VehicleRepository(private val context: Context) {
                     cellVoltageMin = cellMin,
                     cellVoltageMax = cellMax
                 )
+
+                // Detect unresponsive adapter: all critical PIDs returned null
+                val allFailed = soc == null && voltage == null && current == null && battTempMax == null
+                if (allFailed) {
+                    consecutiveFailures++
+                    Timber.w("Poll cycle ${consecutiveFailures}/$maxFailures: all PID reads returned null")
+                    if (consecutiveFailures >= maxFailures) {
+                        Timber.e("Max failures reached ($maxFailures) — disconnecting unresponsive device")
+                        t.disconnect()
+                        break
+                    }
+                } else {
+                    if (consecutiveFailures > 0) Timber.i("Recovered after $consecutiveFailures null cycles")
+                    consecutiveFailures = 0
+                }
 
                 // Persist to Room
                 val rowId = telemetryDao.insert(telemetry)

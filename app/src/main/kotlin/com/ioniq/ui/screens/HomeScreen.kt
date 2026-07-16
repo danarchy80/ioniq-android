@@ -276,11 +276,7 @@ fun SupportEmailButton(telemetry: VehicleTelemetry?) {
 
     OutlinedButton(
         onClick = {
-            try {
-                com.ioniq.diag.SupportEmailSender.launch(context, telemetry)
-            } catch (e: android.content.ActivityNotFoundException) {
-                android.widget.Toast.makeText(context, "No email client installed", android.widget.Toast.LENGTH_LONG).show()
-            }
+            com.ioniq.diag.SupportEmailSender.launch(context, telemetry)
         },
         modifier = Modifier.fillMaxWidth(),
         shape = RoundedCornerShape(12.dp)

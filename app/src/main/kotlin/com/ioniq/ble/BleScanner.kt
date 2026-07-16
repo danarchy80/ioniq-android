@@ -72,16 +72,11 @@ class BleScanner(private val context: Context) {
             override fun onScanResult(callbackType: Int, result: android.bluetooth.le.ScanResult) {
                 val device = result.device
                 val name = result.scanRecord?.deviceName ?: device.name
-                // Filter for ELM327 / OBD adapters by name
-                if (name != null && (name.contains("ELM", ignoreCase = true) ||
-                    name.contains("OBD", ignoreCase = true) ||
-                    name.contains("Vgate", ignoreCase = true) ||
-                    name.contains("VEEPEAK", ignoreCase = true))) {
-                    if (device.address !in seen) {
-                        seen.add(device.address)
-                        _scanResults.value = _scanResults.value + device
-                        Timber.d("Found BLE device: $name (${device.address})")
-                    }
+                // Show all named BLE devices (filtering removed to support more adapters)
+                if (name != null && device.address !in seen) {
+                    seen.add(device.address)
+                    _scanResults.value = _scanResults.value + device
+                    Timber.d("Found BLE device: $name (${device.address})")
                 }
             }
 

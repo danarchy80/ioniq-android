@@ -1,26 +1,36 @@
 package com.ioniq.diag
 
+import android.content.ClipData
+import android.content.ClipboardManager
 import android.content.Context
 import android.content.Intent
 import android.net.Uri
 import com.ioniq.BuildConfig
 import com.ioniq.data.model.VehicleTelemetry
 import timber.log.Timber
+import android.widget.Toast
 
 /**
  * Composes and fires a support email via ACTION_SENDTO.
  * The diagnostic bundle is assembled by [SupportEmailCollector] and attached as text.
+ * Falls back to clipboard copy when no email client is available.
  */
 object SupportEmailSender {
 
     private const val DEFAULT_SUPPORT_EMAIL = "support@ioniq.app"
     private const val SUBJECT = "Ioniq OBD-II Support Request"
 
+    /** Result of a launch attempt — UI layer can react accordingly. */
+    sealed class Result {
+        data object EmailClientLaunched : Result()
+        data class CopiedToClipboard(val supportEmail: String, val fullBody: String) : Result()
+    }
+
     /**
      * Launch the user's email client with a pre-filled support email.
-     * Falls back to the hardcoded default if BuildConfig.SUPPORT_EMAIL is empty.
+     * Falls back to copying the diagnostics to clipboard if no email client is installed.
      */
-    fun launch(context: Context, telemetry: VehicleTelemetry? = null) {
+    fun launch(context: Context, telemetry: VehicleTelemetry? = null): Result {
         val body = try {
             SupportEmailCollector.collect(context, telemetry)
         } catch (e: Exception) {
@@ -32,22 +42,45 @@ object SupportEmailSender {
             .takeIf { it.isNotBlank() && it != "unconfigured" }
             ?: DEFAULT_SUPPORT_EMAIL
 
+        val fullBody = buildEmailBody(body)
+
         val intent = Intent(Intent.ACTION_SENDTO).apply {
             data = Uri.parse("mailto:$destination")
             putExtra(Intent.EXTRA_EMAIL, arrayOf(destination))
             putExtra(Intent.EXTRA_SUBJECT, SUBJECT)
-            putExtra(Intent.EXTRA_TEXT, buildEmailBody(body))
+            putExtra(Intent.EXTRA_TEXT, fullBody)
             addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
         }
 
-        if (intent.resolveActivity(context.packageManager) != null) {
+        return if (intent.resolveActivity(context.packageManager) != null) {
             context.startActivity(intent)
+            Result.EmailClientLaunched
         } else {
-            Timber.w("No email client available to send support email")
-            // Fallback: copy to clipboard? User can still screenshot the diagnostics.
-            // For now we let the UI handle this case.
-            throw android.content.ActivityNotFoundException("No email client installed")
+            Timber.w("No email client available — copying diagnostics to clipboard")
+            copyToClipboard(context, destination, fullBody)
         }
+    }
+
+    private fun copyToClipboard(context: Context, destination: String, fullBody: String): Result {
+        val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+        val clipLabel = "$SUBJECT — for $destination"
+        val clipText = """
+            To: $destination
+            Subject: $SUBJECT
+
+            $fullBody
+        """.trimIndent()
+        try {
+            clipboard.setPrimaryClip(ClipData.newPlainText(clipLabel, clipText))
+            Toast.makeText(
+                context,
+                "No email app found — diagnostics copied to clipboard. Paste into any email to $destination",
+                Toast.LENGTH_LONG
+            ).show()
+        } catch (e: Exception) {
+            Timber.w(e, "Could not show clipboard toast")
+        }
+        return Result.CopiedToClipboard(destination, fullBody)
     }
 
     private fun buildEmailBody(diagnostics: String): String {
