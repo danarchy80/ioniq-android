@@ -22,14 +22,14 @@ import java.time.Instant
  * Central repository orchestrating:
  *   BLE Scanner → ObdTransport (BLE or classic RFCOMM) → OBD PID polling → Room DB → Home Assistant
  *
- * Lifecycle: created by ViewModel or Service, call destroy() when done.
+ * Lifecycle: singleton instance, call destroy() when app exits.
  *
  * Transport selection: the right implementation (ElmBleManager or ElmClassicManager)
  * is picked per-device based on device.type (see ObdTransportFactory). This fixes
  * the long-standing bug where classic SPP adapters were being driven through BLE
  * GATT, causing the OBD bus to hang post-connect.
  */
-class VehicleRepository(private val context: Context) {
+class VehicleRepository private constructor(private val context: Context) {
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val scanner = BleScanner(context)
@@ -44,6 +44,17 @@ class VehicleRepository(private val context: Context) {
 
     // ---- Home Assistant client (lazy init with saved config) ----
     private var haClient: HomeAssistantClient? = null
+
+    companion object {
+        @Volatile
+        private var INSTANCE: VehicleRepository? = null
+
+        fun getInstance(context: Context): VehicleRepository {
+            return INSTANCE ?: synchronized(this) {
+                INSTANCE ?: VehicleRepository(context.applicationContext).also { INSTANCE = it }
+            }
+        }
+    }
 
     // ---- Exposed state (mirrored from active transport) ----
     val scanResults: StateFlow<List<BluetoothDevice>> = scanner.scanResults

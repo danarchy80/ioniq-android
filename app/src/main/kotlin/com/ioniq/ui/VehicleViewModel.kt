@@ -35,7 +35,9 @@ class VehicleViewModel(
 
     override fun onCleared() {
         super.onCleared()
-        repo.destroy()
+        // Do NOT call repo.destroy() here — VehicleRepository is a singleton
+        // shared with VehicleMonitorService (foreground). The Service owns
+        // the destroy lifecycle when it stops.
     }
 }
 

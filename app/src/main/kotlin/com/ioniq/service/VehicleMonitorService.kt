@@ -1,7 +1,6 @@
 package com.ioniq.service
 
 import android.app.*
-import android.bluetooth.BluetoothDevice
 import android.content.Context
 import android.content.Intent
 import android.os.Build
@@ -16,36 +15,27 @@ import kotlinx.coroutines.flow.*
 import timber.log.Timber
 
 /**
- * Foreground Service that keeps the BLE connection alive and persists
- * across app lifecycle changes. Manages the ongoing notification and
- * triggers VehicleRepository connection logic.
+ * Foreground Service that keeps the telemetry pipeline alive when the app is
+ * backgrounded. It does NOT own the connection itself — VehicleRepository
+ * (singleton) does. This service simply:
+ *
+ *   1. Promotes the process to "foreground" so Android won't kill it.
+ *   2. Updates the notification with connection status.
+ *   3. Listens for reconnect/disconnect actions from the notification.
  *
  * Lifecycle:
- *  - Started when user connects to adapter (or on boot if previously connected)
- *  - Runs continuously while adapter is connected or auto-reconnecting
- *  - Stops self when user explicitly disconnects
+ *  - Started by MainActivity when connectionState becomes CONNECTED
+ *  - Stopped by MainActivity (or self-stops) when connection stays down
+ *    with no lastDevice address
  */
 class VehicleMonitorService : Service() {
 
     companion object {
         private const val NOTIFICATION_ID = 1001
         private const val CHANNEL_ID = "vehicle_monitor_channel"
-        private const val EXTRA_DEVICE_ADDRESS = "extra_device_address"
 
-        fun start(context: Context, deviceAddress: String) {
-            val intent = Intent(context, VehicleMonitorService::class.java).apply {
-                putExtra(EXTRA_DEVICE_ADDRESS, deviceAddress)
-            }
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                context.startForegroundService(intent)
-            } else {
-                context.startService(intent)
-            }
-        }
-
-        fun stop(context: Context) {
-            context.stopService(Intent(context, VehicleMonitorService::class.java))
-        }
+        const val ACTION_DISCONNECT = "com.ioniq.action.DISCONNECT"
+        const val ACTION_RECONNECT  = "com.ioniq.action.RECONNECT"
     }
 
     private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
@@ -55,51 +45,62 @@ class VehicleMonitorService : Service() {
         super.onCreate()
         Timber.i("VehicleMonitorService created")
         createNotificationChannel()
-        repo = VehicleRepository(this)
+        repo = VehicleRepository.getInstance(this).also { Timber.i("Using singleton repo inside service") }
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        val deviceAddress = intent?.getStringExtra(EXTRA_DEVICE_ADDRESS)
-
-        // Start as foreground with initial notification
-        startForeground(NOTIFICATION_ID, buildNotification("Connecting..."))
-
-        if (deviceAddress != null) {
-            serviceScope.launch {
-                try {
-                    val btAdapter = android.bluetooth.BluetoothAdapter.getDefaultAdapter()
-                    if (btAdapter == null) {
-                        Timber.e("No Bluetooth adapter available")
-                        stopSelf()
-                        return@launch
-                    }
-
-                    val device: BluetoothDevice = btAdapter.getRemoteDevice(deviceAddress)
-                    Timber.i("Service connecting to device: $deviceAddress")
-                    repo.connect(device)
-
-                    // Monitor connection state and update notification
-                    repo.connectionState
-                        .drop(1) // skip initial
-                        .distinctUntilChanged()
-                        .collect { state ->
-                            val msg = when (state) {
-                                ObdTransport.ConnectionState.CONNECTED -> "Connected — monitoring telemetry"
-                                ObdTransport.ConnectionState.CONNECTING -> "Connecting..."
-                                ObdTransport.ConnectionState.DISCONNECTING -> "Disconnecting..."
-                                ObdTransport.ConnectionState.DISCONNECTED -> "Disconnected — reconnecting..."
-                            }
-                            val nm = getSystemService(NOTIFICATION_SERVICE) as NotificationManager
-                            nm.notify(NOTIFICATION_ID, buildNotification(msg))
-                        }
-                } catch (e: Exception) {
-                    Timber.e(e, "Service connection failed")
-                    updateNotification("Error: ${e.message}")
+        when (intent?.action) {
+            ACTION_DISCONNECT -> {
+                Timber.i("Service received DISCONNECT action")
+                serviceScope.launch {
+                    try { repo.disconnect() } catch (e: Exception) { Timber.e(e, "disconnect() failed") }
                 }
+                stopForeground(STOP_FOREGROUND_REMOVE)
+                stopSelf()
+                return START_NOT_STICKY
+            }
+            ACTION_RECONNECT -> {
+                Timber.i("Service received RECONNECT action — delegating to repo")
+                // The repository's own auto-reconnect loop handles this; this
+                // action is a no-op placeholder for explicit user-driven retry.
             }
         }
 
-        // START_STICKY: let OS restart us if killed
+        // Start as foreground with initial notification
+        startForeground(NOTIFICATION_ID, buildNotification("Connected — monitoring"))
+
+        // Monitor repo's connection state to drive the notification label.
+        // Auto-stop ourselves if the repo is DISCONNECTED with no last device address.
+        serviceScope.launch {
+            var consecutiveDisconnected = 0
+            repo.connectionState
+                .drop(0)
+                .distinctUntilChanged()
+                .collect { state ->
+                    val msg = when (state) {
+                        ObdTransport.ConnectionState.CONNECTED    -> "Connected — monitoring telemetry"
+                        ObdTransport.ConnectionState.CONNECTING   -> "Connecting..."
+                        ObdTransport.ConnectionState.DISCONNECTING -> "Disconnecting..."
+                        ObdTransport.ConnectionState.DISCONNECTED -> "Disconnected"
+                    }
+                    updateNotification(msg)
+
+                    if (state == ObdTransport.ConnectionState.DISCONNECTED ||
+                        state == ObdTransport.ConnectionState.DISCONNECTING) {
+                        consecutiveDisconnected++
+                        // After two consecutive disconnected samples with no last device address, give up
+                        if (consecutiveDisconnected >= 2) {
+                            Timber.i("Repo parked DISCONNECTED with no address, stopping service")
+                            delay(1_500)
+                            stopForeground(STOP_FOREGROUND_REMOVE)
+                            stopSelf()
+                        }
+                    } else {
+                        consecutiveDisconnected = 0
+                    }
+                }
+        }
+
         return START_STICKY
     }
 
@@ -108,7 +109,7 @@ class VehicleMonitorService : Service() {
     override fun onDestroy() {
         super.onDestroy()
         Timber.i("VehicleMonitorService destroyed")
-        repo.destroy()
+        // Do NOT destroy the repo — it's a singleton shared with the Activity
         serviceScope.cancel()
     }
 
@@ -130,9 +131,19 @@ class VehicleMonitorService : Service() {
     }
 
     private fun buildNotification(text: String): Notification {
-        val pendingIntent = PendingIntent.getActivity(
+        val mainIntent = PendingIntent.getActivity(
             this, 0,
             Intent(this, MainActivity::class.java),
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
+        val disconnectIntent = PendingIntent.getService(
+            this, 1,
+            Intent(this, VehicleMonitorService::class.java).apply { action = ACTION_DISCONNECT },
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
+        val reconnectIntent = PendingIntent.getService(
+            this, 2,
+            Intent(this, VehicleMonitorService::class.java).apply { action = ACTION_RECONNECT },
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
 
@@ -140,7 +151,9 @@ class VehicleMonitorService : Service() {
             .setContentTitle("Ioniq EV Monitor")
             .setContentText(text)
             .setSmallIcon(R.drawable.ic_notification)
-            .setContentIntent(pendingIntent)
+            .setContentIntent(mainIntent)
+            .addAction(R.drawable.ic_notification, "Reconnect", reconnectIntent)
+            .addAction(R.drawable.ic_notification, "Disconnect", disconnectIntent)
             .setOngoing(true)
             .setPriority(NotificationCompat.PRIORITY_LOW)
             .setCategory(NotificationCompat.CATEGORY_SERVICE)

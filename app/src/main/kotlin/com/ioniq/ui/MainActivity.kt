@@ -14,8 +14,13 @@ import androidx.activity.viewModels
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
 import androidx.compose.ui.Modifier
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.ioniq.ble.ObdTransport
 import com.ioniq.data.repository.VehicleRepository
+import com.ioniq.service.VehicleMonitorService
 import com.ioniq.ui.screens.HomeScreen
 import com.ioniq.ui.theme.IoniqTheme
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -26,7 +31,7 @@ import timber.log.Timber
 class MainActivity : ComponentActivity() {
 
     private val viewModel: VehicleViewModel by viewModels {
-        VehicleViewModelFactory(VehicleRepository(this))
+        VehicleViewModelFactory(VehicleRepository.getInstance(this))
     }
 
     // Expose permission state to Compose
@@ -65,15 +70,31 @@ class MainActivity : ComponentActivity() {
         Timber.i("Device: ${Build.MANUFACTURER} ${Build.MODEL}, Android ${Build.VERSION.SDK_INT}")
         
         try {
-            Timber.i("Creating Repository...")
-            val repo = VehicleRepository(this)
-            
-            Timber.i("Creating ViewModel...")
-            val vm = VehicleViewModel(repo)
-            
             Timber.i("Setting Compose content...")
             setContent {
                 Timber.i("Compose content executing")
+
+                // Observe connection state so we can start/stop the foreground service
+                val connState by viewModel.connectionState.collectAsStateWithLifecycle()
+                LaunchedEffect(connState) {
+                    Timber.i("Connection state changed to $connState")
+                    if (connState == ObdTransport.ConnectionState.CONNECTED) {
+                        // Start foreground service to keep poll running while backgrounded
+                        Timber.i("Starting VehicleMonitorService (foreground)")
+                        val intent = Intent(this@MainActivity, VehicleMonitorService::class.java)
+                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                            startForegroundService(intent)
+                        } else {
+                            startService(intent)
+                        }
+                    } else if (connState == ObdTransport.ConnectionState.DISCONNECTED ||
+                               connState == ObdTransport.ConnectionState.DISCONNECTING) {
+                        // Stop service when disconnected
+                        Timber.i("Stopping VehicleMonitorService")
+                        stopService(Intent(this@MainActivity, VehicleMonitorService::class.java))
+                    }
+                }
+
                 IoniqTheme {
                     Timber.i("Inside IoniqTheme")
                     Surface(
