@@ -110,6 +110,8 @@ fun HomeScreen(
     val vehicleState by viewModel.vehicleState.collectAsState(initial = null)
     val scanError by viewModel.scanError.collectAsState()
     val btReady by bluetoothReady.collectAsState()
+    val pollStatus by viewModel.pollStatus.collectAsState()
+    val pollFailCount by viewModel.pollFailCount.collectAsState()
     val context = LocalContext.current
     val telemetry = vehicleState  // vehicleState IS the telemetry data class
 
@@ -153,6 +155,12 @@ fun HomeScreen(
                 item { GettingStartedCard() }
             }
             connectionState == ObdTransport.ConnectionState.CONNECTED -> {
+                // Poll status banner (subtle, only shows when not POLLING)
+                if (pollStatus != com.ioniq.data.repository.VehicleRepository.PollStatus.POLLING) {
+                    item {
+                        PollStatusBanner(pollStatus, pollFailCount)
+                    }
+                }
                 item { TelemetryDashboard(vehicleState) }
             }
             else -> {
@@ -701,6 +709,56 @@ fun ConnectionStatusCard(
                         trackColor = ChipBg
                     )
                 }
+            }
+        }
+    }
+}
+
+// ─────────────────────────── PollStatus banner ───────────────────────────
+
+@Composable
+private fun PollStatusBanner(
+    status: com.ioniq.data.repository.VehicleRepository.PollStatus,
+    failCount: Int
+) {
+    if (status == com.ioniq.data.repository.VehicleRepository.PollStatus.POLLING) return
+    val bg: Color
+    val accent: Color
+    val icon: androidx.compose.ui.graphics.vector.ImageVector
+    val title: String
+    val subtitle: String
+    when (status) {
+        com.ioniq.data.repository.VehicleRepository.PollStatus.POLLING -> return
+        com.ioniq.data.repository.VehicleRepository.PollStatus.VEHICLE_OFF -> {
+            bg = Color(0xFF2A2416); accent = ChipWarn; icon = Icons.Default.Power
+            title = "Vehicle asleep"
+            subtitle = "Polling at reduced cadence · failures: $failCount"
+        }
+        com.ioniq.data.repository.VehicleRepository.PollStatus.ECU_UNREACHABLE -> {
+            bg = Color(0xFF2A1B1B); accent = ChipBad; icon = Icons.Default.LinkOff
+            title = "ECU unreachable"
+            subtitle = "Retrying — no hard disconnect · failures: $failCount"
+        }
+    }
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        colors = CardDefaults.cardColors(containerColor = bg),
+        shape = RoundedCornerShape(12.dp)
+    ) {
+        Row(
+            modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp).fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Icon(
+                imageVector = icon,
+                contentDescription = null,
+                modifier = Modifier.size(24.dp),
+                tint = accent
+            )
+            Spacer(Modifier.width(10.dp))
+            Column(Modifier.weight(1f)) {
+                Text(title, color = ChipValue, style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
+                Text(subtitle, color = accent.copy(alpha = 0.9f), style = MaterialTheme.typography.labelSmall)
             }
         }
     }

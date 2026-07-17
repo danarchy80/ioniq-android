@@ -115,15 +115,38 @@ object ObdParser {
 
     // ---- Private helpers ----
 
-    private fun isBad(raw: String?): Boolean =
-        raw.isNullOrBlank() || raw.trim() == "?" || raw.contains("NO DATA") || raw.contains("ERROR")
+    private fun isBad(raw: String?): Boolean {
+        if (raw.isNullOrBlank()) return true
+        val trimmed = raw.trim()
+        // Well-known ELM327 error strings — these must never reach the parsers
+        val errorStrings = arrayOf(
+            "SEARCHING", "BUS INIT", "BUS ERROR", "UNABLE TO CONNECT",
+            "NO DATA", "?", "ERROR", "STOPPED"
+        )
+        if (errorStrings.any { trimmed.uppercase().contains(it) }) return true
+        // Reject responses that carry no hex bytes at all (pure textual noise)
+        if (!containsHexBytes(cleanResponse(raw))) return true
+        return false
+    }
 
     private fun cleanResponse(raw: String): String =
         raw.trim().replace("\r", " ").replace("\n", " ")
             .replace(">", "").replace(Regex("\\d:"), "").trim()
 
-    private fun isError(cleaned: String): Boolean =
-        cleaned == "?" || cleaned.contains("NO DATA") || cleaned.contains("ERROR")
+    private fun isError(cleaned: String): Boolean {
+        val upper = cleaned.uppercase()
+        val errorStrings = arrayOf(
+            "SEARCHING", "BUS INIT", "BUS ERROR", "UNABLE TO CONNECT",
+            "NO DATA", "?", "ERROR", "STOPPED"
+        )
+        if (errorStrings.any { upper.contains(it) }) return true
+        if (!containsHexBytes(cleaned)) return true
+        return false
+    }
+
+    /** True if the string contains at least one pair of hex digits (a byte). */
+    private fun containsHexBytes(s: String): Boolean =
+        Regex("[0-9A-Fa-f]{2}").containsMatchIn(s.replace(" ", ""))
 
     private fun stripEcho(cleaned: String, pidHex: String): String =
         if (cleaned.uppercase().startsWith(pidHex)) cleaned.substring(pidHex.length).trim() else cleaned

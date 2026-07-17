@@ -359,6 +359,19 @@ class ElmBleManager(context: Context) : ObdTransport {
                         .trim()
                 }
             }
+
+            // Recovery flush: if the ELM is stuck mid-"Searching…" or otherwise
+            // unresponsive, send CRs to force it to drop the current command
+            // and re-emit the ">" prompt. Best-effort — ignore write failures.
+            if (result == null) {
+                runCatching {
+                    Timber.d("sendCommand timed out for '$command' — sending \\r\\r recovery flush")
+                    tx.value = "\r\r".toByteArray()
+                    g.writeCharacteristic(tx)
+                    kotlinx.coroutines.delay(200)
+                }
+            }
+
             result
         }
     }

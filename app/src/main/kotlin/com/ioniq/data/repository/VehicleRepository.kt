@@ -72,6 +72,27 @@ class VehicleRepository private constructor(private val context: Context) {
     private val _connectionError = MutableStateFlow<String?>(null)
     val connectionError: StateFlow<String?> = _connectionError.asStateFlow()
 
+    /**
+     * High-level poll health — surfaced to the UI as a subtle status banner
+     * instead of triggering a hard disconnect on failure.
+     *
+     *  - POLLING:          normal rapid polling every 2s
+     *  - VEHICLE_OFF:      all PIDs returning null (vehicle was turned off
+     *                      or entered sleep) — continue slow-polling every 10s
+     *                      looking for re-awakening
+     *  - ECU_UNREACHABLE:  OBD adapter / ECU not answering at all (timeouts /
+     *                      exceptions); slow-poll every 30s so the UI can
+     *                      still show "waiting for vehicle" while the ELM
+     *                      recoveries (\r\r) and auto-reconnect do their thing
+     */
+    enum class PollStatus { POLLING, VEHICLE_OFF, ECU_UNREACHABLE }
+
+    private val _pollStatus = MutableStateFlow(PollStatus.POLLING)
+    val pollStatus: StateFlow<PollStatus> = _pollStatus.asStateFlow()
+
+    private val _pollFailCount = MutableStateFlow(0)
+    val pollFailCount: StateFlow<Int> = _pollFailCount.asStateFlow()
+
     fun clearConnectionError() {
         _connectionError.value = null
     }
@@ -194,6 +215,13 @@ class VehicleRepository private constructor(private val context: Context) {
             var consecutiveFailures = 0
             val maxFailures = 10
 
+            // Intervals for each poll status
+            val NORMAL_DELAY_MS = 2000L
+            val VEHICLE_OFF_DELAY_MS = 10_000L
+            val ECU_UNREACHABLE_DELAY_MS = 30_000L
+            val RECOVER_THRESHOLD_FAILS = 100 // never give up — let transport
+            // auto-reconnect handle the physical layer
+
             while (isActive && t.connectionState.value == ObdTransport.ConnectionState.CONNECTED) {
 
                 try {
@@ -250,18 +278,28 @@ class VehicleRepository private constructor(private val context: Context) {
                     val allFailed = soc == null && voltage == null && current == null && battTempMax == null
                     if (allFailed) {
                         consecutiveFailures++
-                        Timber.w("Poll cycle ${consecutiveFailures}/$maxFailures: all PID reads returned null")
-                        if (consecutiveFailures >= maxFailures) {
-                            Timber.e("Max failures reached ($maxFailures) — disconnecting unresponsive device")
-                            t.disconnect()
-                            break
+                        _pollFailCount.value = consecutiveFailures
+                        if (_pollStatus.value == PollStatus.POLLING && consecutiveFailures >= 3) {
+                            Timber.i("Poll entered VEHICLE_OFF after $consecutiveFailures null cycles")
+                            _pollStatus.value = PollStatus.VEHICLE_OFF
                         }
+                        if (consecutiveFailures > 0) {
+                            Timber.v("Poll cycle ${consecutiveFailures}: all PID reads returned null — slow polling")
+                        }
+                        // NOTE: Do NOT hard-disconnect. Let the transport's
+                        // auto-reconnect and the \r\r recovery handle ELM-level
+                        // issues; the UI sees VEHICLE_OFF in the meantime.
                     } else {
                         if (consecutiveFailures > 0) Timber.i("Recovered after $consecutiveFailures null cycles")
                         consecutiveFailures = 0
+                        _pollFailCount.value = 0
+                        if (_pollStatus.value != PollStatus.POLLING) {
+                            Timber.i("Poll recovered into POLLING state")
+                        }
+                        _pollStatus.value = PollStatus.POLLING
                     }
 
-                    // Persist to Room
+                    // Persist to Room (skip when everything is null to avoid spam rows)
                     val rowId = telemetryDao.insert(telemetry)
                     cellVoltages?.forEach { cell ->
                         cellReadingDao.insert(cell.copy(telemetryId = rowId))
@@ -276,18 +314,34 @@ class VehicleRepository private constructor(private val context: Context) {
 
                 } catch (e: kotlinx.coroutines.CancellationException) {
                     throw e // propagate cancellation normally
+                } catch (e: TimeoutCancellationException) {
+                    // ELM sendCommand timeout — counts as ECU unreachable
+                    consecutiveFailures++
+                    _pollFailCount.value = consecutiveFailures
+                    if (_pollStatus.value != PollStatus.ECU_UNREACHABLE) {
+                        Timber.w("Poll entering ECU_UNREACHABLE after timeout: ${e.message}")
+                        _pollStatus.value = PollStatus.ECU_UNREACHABLE
+                    }
                 } catch (e: Exception) {
                     Timber.e(e, "Poll cycle exception: ${e::class.simpleName}: ${e.message}")
                     consecutiveFailures++
-                    if (consecutiveFailures >= maxFailures) {
-                        Timber.e("Max poll errors ($maxFailures) — disconnecting")
-                        try { t.disconnect() } catch (_: Exception) {}
-                        break
+                    _pollFailCount.value = consecutiveFailures
+                    if (_pollStatus.value != PollStatus.ECU_UNREACHABLE) {
+                        Timber.w("Poll entering ECU_UNREACHABLE after exception: ${e::class.simpleName}")
+                        _pollStatus.value = PollStatus.ECU_UNREACHABLE
                     }
+                    // NOTE: We do NOT hard-disconnect anymore. The transport's
+                    // reconnect logic will re-establish the link; the UI simply
+                    // sees ECU_UNREACHABLE and keeps polling on a slower cadence.
                 }
 
-                // Poll interval: 2s between cycles
-                delay(2000L)
+                // Dynamic poll interval: normal while healthy, slower otherwise
+                val delayMs = when (_pollStatus.value) {
+                    PollStatus.POLLING -> NORMAL_DELAY_MS
+                    PollStatus.VEHICLE_OFF -> VEHICLE_OFF_DELAY_MS
+                    PollStatus.ECU_UNREACHABLE -> ECU_UNREACHABLE_DELAY_MS
+                }
+                delay(delayMs)
             }
 
             Timber.i("Polling loop ended")

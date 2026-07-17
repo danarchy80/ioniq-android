@@ -290,6 +290,20 @@ class ElmClassicManager(context: Context) : ObdTransport {
                         .trim()
                 }
             }
+
+            // Recovery flush: if the ELM is stuck mid-"Searching…" or otherwise
+            // unresponsive, send carriage returns to make it drop the current
+            // command and re-prompt. This is best-effort — ignore failures.
+            if (result == null) {
+                runCatching {
+                    Timber.d("sendCommand timed out for '$command' — sending \\r\\r recovery flush")
+                    os.write("\r\r".toByteArray())
+                    os.flush()
+                    // Brief pause so incoming noise from the ELM draining is swallowed.
+                    kotlinx.coroutines.delay(150)
+                }
+            }
+
             result
         }
     }

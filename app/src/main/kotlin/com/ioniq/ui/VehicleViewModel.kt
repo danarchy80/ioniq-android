@@ -7,6 +7,7 @@ import androidx.lifecycle.viewModelScope
 import com.ioniq.ble.ObdTransport
 import com.ioniq.data.model.VehicleTelemetry
 import com.ioniq.data.repository.VehicleRepository
+import com.ioniq.data.repository.VehicleRepository.PollStatus
 import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.launch
 
@@ -22,6 +23,10 @@ class VehicleViewModel(
     val connectionError: StateFlow<String?> = repo.connectionError
     val vehicleState: StateFlow<VehicleTelemetry?> = repo.vehicleState
     val pairedClassicDevices: StateFlow<List<BluetoothDevice>> = repo.pairedClassicDevices
+
+    /** High-level poll health for the status banner: POLLING / VEHICLE_OFF / ECU_UNREACHABLE */
+    val pollStatus: StateFlow<PollStatus> = repo.pollStatus
+    val pollFailCount: StateFlow<Int> = repo.pollFailCount
 
     fun startScan() = repo.startScan()
     fun stopScan() = repo.stopScan()

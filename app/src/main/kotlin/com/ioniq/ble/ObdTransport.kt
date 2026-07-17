@@ -19,9 +19,10 @@ interface ObdTransport {
     fun connectToDevice(device: android.bluetooth.BluetoothDevice)
 
     /** Send an ELM327 AT/OBD command, trimmed response, or null on timeout. */
-    suspend fun sendCommand(command: String, timeoutMs: Long = 3000L): String?
+    suspend fun sendCommand(command: String, timeoutMs: Long = 5000L): String?
 
-    /** Convenience: send a PID query. */
+    /** Convenience: send a PID query. Default 5 s timeout gives the ELM chip
+     *  enough headroom when stuck in a "Searching…" cycle before we bail. */
     suspend fun readPid(pid: String): String? = sendCommand(pid)
 
     fun disconnect()
