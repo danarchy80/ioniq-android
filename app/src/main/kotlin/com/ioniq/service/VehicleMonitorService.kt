@@ -3,6 +3,7 @@ package com.ioniq.service
 import android.app.*
 import android.content.Context
 import android.content.Intent
+import android.content.pm.ServiceInfo
 import android.os.Build
 import android.os.IBinder
 import androidx.core.app.NotificationCompat
@@ -66,8 +67,14 @@ class VehicleMonitorService : Service() {
             }
         }
 
-        // Start as foreground with initial notification
-        startForeground(NOTIFICATION_ID, buildNotification("Connected — monitoring"))
+        // Start as foreground service with explicit type (required on Android 14+, targetSdk 34+)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            startForeground(NOTIFICATION_ID, buildNotification("Connected — monitoring"),
+                ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE or
+                ServiceInfo.FOREGROUND_SERVICE_TYPE_LOCATION)
+        } else {
+            startForeground(NOTIFICATION_ID, buildNotification("Connected — monitoring"))
+        }
 
         // Monitor repo's connection state to drive the notification label.
         // Auto-stop ourselves if the repo is DISCONNECTED with no last device address.
