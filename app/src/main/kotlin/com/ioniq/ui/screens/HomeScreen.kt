@@ -243,7 +243,16 @@ fun SettingsOverlay(
                 ) {
                     StatRow("Device", "${android.os.Build.MANUFACTURER} ${android.os.Build.MODEL}")
                     StatRow("Android", "${android.os.Build.VERSION.RELEASE} (API ${android.os.Build.VERSION.SDK_INT})")
-                    StatRow("App", "${com.ioniq.BuildConfig.VERSION_NAME} (${com.ioniq.BuildConfig.VERSION_CODE})")
+                    // Read from PackageManager to avoid Kotlin compile-time constant inlining
+                    // of BuildConfig.VERSION_NAME (can go stale with incremental compilation)
+                    val pkgInfo = remember {
+                        try {
+                            context.packageManager.getPackageInfo(context.packageName, 0)
+                        } catch (e: android.content.pm.PackageManager.NameNotFoundException) {
+                            null
+                        }
+                    }
+                    StatRow("App", "${pkgInfo?.versionName ?: "unknown"} (${pkgInfo?.longVersionCode ?: com.ioniq.BuildConfig.VERSION_CODE})")
                     @Suppress("DEPRECATION")
                     val btEnabled = try {
                         android.bluetooth.BluetoothAdapter.getDefaultAdapter()?.isEnabled == true

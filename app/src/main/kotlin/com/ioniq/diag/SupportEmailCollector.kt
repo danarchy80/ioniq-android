@@ -30,7 +30,17 @@ object SupportEmailCollector {
         val sb = StringBuilder(8192)
 
         sb.appendSection("APP INFO") {
-            line("Version", "${BuildConfig.VERSION_NAME} (${BuildConfig.VERSION_CODE})")
+            // Read version from PackageManager at runtime instead of BuildConfig.VERSION_NAME.
+            // BuildConfig constants are static final Strings — the Kotlin compiler inlines them
+            // at compile time, and incremental compilation can skip recompiling unchanged source
+            // files even when the BuildConfig value changes, leaving a stale version baked in.
+            // PackageManager reads from the APK manifest at runtime, always current.
+            val pkgInfo = try {
+                context.packageManager.getPackageInfo(context.packageName, 0)
+            } catch (e: PackageManager.NameNotFoundException) {
+                null
+            }
+            line("Version", "${pkgInfo?.versionName ?: "unknown"} (${pkgInfo?.longVersionCode ?: BuildConfig.VERSION_CODE})")
             line("Build type", BuildConfig.BUILD_TYPE)
             line("Package", context.packageName)
         }
