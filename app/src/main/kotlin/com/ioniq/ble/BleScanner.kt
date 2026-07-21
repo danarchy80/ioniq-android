@@ -28,6 +28,8 @@ class BleScanner(private val context: Context) {
     val scanError: StateFlow<String?> = _scanError.asStateFlow()
 
     @Volatile private var isScanning = false
+    private var scanCallback: android.bluetooth.le.ScanCallback? = null
+    private var scanScanner: android.bluetooth.le.BluetoothLeScanner? = null
 
     @SuppressLint("MissingPermission")
     fun startScan() {
@@ -95,13 +97,13 @@ class BleScanner(private val context: Context) {
 
         try {
             scanner.startScan(callback)
+            scanCallback = callback
+            scanScanner = scanner
             Timber.i("BLE scan started...")
 
             // Auto-stop after 15 seconds
             android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
-                try { scanner.stopScan(callback) } catch (_: Exception) {}
-                isScanning = false
-                Timber.i("BLE scan stopped (${seen.size} devices found)")
+                stopScan()
             }, 15_000L)
         } catch (e: SecurityException) {
             Timber.e(e, "SecurityException during scan")
@@ -114,8 +116,18 @@ class BleScanner(private val context: Context) {
         }
     }
 
+    @SuppressLint("MissingPermission")
     fun stopScan() {
+        if (!isScanning) return
         isScanning = false
+        try {
+            scanScanner?.stopScan(scanCallback)
+        } catch (e: Exception) {
+            Timber.w("Error stopping BLE scan: ${e.message}")
+        }
+        scanCallback = null
+        scanScanner = null
+        Timber.i("BLE scan stopped")
     }
 
     fun clearError() {

@@ -131,7 +131,7 @@ object ObdParser {
 
     private fun cleanResponse(raw: String): String =
         raw.trim().replace("\r", " ").replace("\n", " ")
-            .replace(">", "").replace(Regex("\\d:"), "").trim()
+            .replace(">", "").replace(Regex("\\d+:"), "").trim()
 
     private fun isError(cleaned: String): Boolean {
         val upper = cleaned.uppercase()

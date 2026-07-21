@@ -4,6 +4,7 @@ import android.content.Intent
 import android.os.Bundle
 import android.support.v4.media.MediaBrowserCompat
 import android.support.v4.media.MediaDescriptionCompat
+import android.support.v4.media.session.MediaSessionCompat
 import androidx.media.MediaBrowserServiceCompat
 import com.ioniq.R
 import timber.log.Timber
@@ -28,10 +29,15 @@ class AutomotiveService : MediaBrowserServiceCompat() {
         private const val MEDIA_ID_CHARGING = "charging"
     }
 
+    private var mediaSession: MediaSessionCompat? = null
+
     override fun onCreate() {
         super.onCreate()
-        // sessionToken must be set before onGetRoot returns
-        Timber.d("AutomotiveService created")
+        mediaSession = MediaSessionCompat(this, "IoniqAutomotiveService").apply {
+            isActive = true
+        }
+        sessionToken = mediaSession?.sessionToken
+        Timber.d("AutomotiveService created with media session")
     }
 
     /**
@@ -102,5 +108,11 @@ class AutomotiveService : MediaBrowserServiceCompat() {
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         return START_STICKY
+    }
+
+    override fun onDestroy() {
+        mediaSession?.release()
+        mediaSession = null
+        super.onDestroy()
     }
 }

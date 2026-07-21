@@ -36,6 +36,9 @@ class HomeAssistantClient(
     private val _incomingCommands = MutableSharedFlow<HaCommand>(replay = 0)
     val incomingCommands: SharedFlow<HaCommand> = _incomingCommands.asSharedFlow()
 
+    private var reconnectAttempts = 0
+    private val maxReconnectAttempts = 15
+
     data class HaCommand(val action: String, val payload: Map<String, Any?>)
 
     /**
@@ -51,6 +54,7 @@ class HomeAssistantClient(
 
                 override fun onOpen(webSocket: WebSocket, response: Response) {
                     Timber.i("HA WebSocket opened — waiting for auth_required")
+                    reconnectAttempts = 0  // reset on successful connection
                 }
 
                 override fun onMessage(webSocket: WebSocket, text: String) {
@@ -172,10 +176,17 @@ class HomeAssistantClient(
     }
 
     private fun scheduleReconnect() {
+        if (reconnectAttempts >= maxReconnectAttempts) {
+            Timber.w("HA reconnect giving up after $maxReconnectAttempts attempts")
+            _state.value = HaState.ERROR
+            return
+        }
+        reconnectAttempts++
+        val delayMs = (5000L * (1L shl (reconnectAttempts - 1).coerceAtMost(5))).coerceAtMost(30000L)
+        Timber.i("HA reconnect attempt $reconnectAttempts/$maxReconnectAttempts in ${delayMs}ms")
         clientScope.launch {
-            delay(5000)
+            delay(delayMs)
             if (_state.value != HaState.AUTHENTICATED) {
-                Timber.i("Attempting HA reconnect...")
                 connect()
             }
         }

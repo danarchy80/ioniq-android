@@ -17,9 +17,8 @@ object ObdPids {
     const val COOLANT_TEMP     = "0105"
     const val INTAKE_AIR_TEMP  = "010F"
     const val VEHICLE_SPEED    = "010D"
-    const val BATTERY_VOLTAGE  = "0142"    // Standard OBD control module voltage
+    const val BATTERY_VOLTAGE  = "0142"    // Standard OBD control module voltage (alias of CONTROL_MODULE_VOLTAGE)
     const val RUNTIME          = "011F"
-    const val CONTROL_MODULE_VOLTAGE = "0142"
 
     // ---- Hyundai / Ioniq EV-specific (Mode 22) ----
     // Service 22 = manufacturer-specific data request
@@ -85,30 +84,9 @@ object ObdPids {
     /** Cumulative energy discharged (kWh) */
     const val CUMULATIVE_ENERGY_DISCHARGED = "22B00B"
 
-    /**
-     * Parse standard OBD hex response to readable value.
-     * Example: "41 0C 0A F0" -> speed in km/h
-     */
-    fun parseStandardOBD(pid: String, raw: String): Float? {
-        val bytes = raw.replace(" ", "")
-            .chunked(2)
-            .map { it.toInt(16) }
-            .drop(2) // strip mode+0x40 and pid echoes
-
-        if (bytes.size < 1) return null
-
-        return when (pid) {
-            "010D" -> bytes[0].toFloat()                              // speed km/h
-            "0105" -> bytes[0] - 40f                                  // coolant ºC
-            "010F" -> bytes[0] - 40f                                  // intake air ºC
-            "0142" -> ((bytes[0] shl 8) or bytes[1]) / 1000f          // control module V
-            "0104" -> bytes[0] / 2.55f                                // load %
-            else -> null
-        }
-    }
-
-    fun parseSoc(hexBytes: List<Int>): Float? {
-        if (hexBytes.size < 2) return null
-        return ((hexBytes[0] shl 8) or hexBytes[1]) / 10f
-    }
+    // NOTE: parseStandardOBD() and parseSoc() were removed — they were dead code
+    // (never called). All OBD parsing flows through ObdParser.parseResponse() /
+    // ObdParser.parseSoc() which use safe mapNotNull + runCatching for hex parsing.
+    // The removed parseStandardOBD had an unsafe .map { it.toInt(16) } that would
+    // crash on malformed ELM327 responses (spaces, '>', '?', partial bytes).
 }
