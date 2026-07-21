@@ -311,18 +311,6 @@ class ElmBleManager(context: Context) : ObdTransport {
     }
 
     /**
-     * Send ELM327 AT initialization sequence after GATT services discovered.
-     */
-    private suspend fun initializeElm() {
-        val commands = listOf("ATZ", "ATE0", "ATL0", "ATS0", "ATH0", "ATSP0")
-        for (cmd in commands) {
-            val resp = sendCommand(cmd, timeoutMs = atCommandTimeoutMs)
-            Timber.d("Init $cmd → ${resp ?: "TIMEOUT"}")
-        }
-        Timber.i("ELM initialization complete")
-    }
-
-    /**
      * Send an OBD-II command string and wait for response.
      * @return response string (trimmed, no ">"), or null on timeout.
      */

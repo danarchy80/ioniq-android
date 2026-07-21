@@ -250,15 +250,6 @@ class ElmClassicManager(context: Context) : ObdTransport {
         }
     }
 
-    private suspend fun initializeElm() {
-        val commands = listOf("ATZ", "ATE0", "ATL0", "ATS0", "ATH0", "ATSP0")
-        for (cmd in commands) {
-            val resp = sendCommand(cmd, timeoutMs = atCommandTimeoutMs)
-            Timber.d("Init $cmd → ${resp ?: "TIMEOUT"}")
-        }
-        Timber.i("ELM initialization complete (classic)")
-    }
-
     override suspend fun sendCommand(command: String, timeoutMs: Long): String? {
         return withContext(Dispatchers.IO) {
             val os = output ?: return@withContext null

@@ -25,6 +25,21 @@ interface ObdTransport {
      *  enough headroom when stuck in a "Searching…" cycle before we bail. */
     suspend fun readPid(pid: String): String? = sendCommand(pid)
 
+    /**
+     * Standard ELM327 AT initialization sequence shared by all transports.
+     * Sends: ATZ (reset), ATE0 (echo off), ATL0 (linefeeds off),
+     *        ATS0 (spaces off), ATH0 (headers off), ATSP0 (auto protocol).
+     * Implementations can override if they need transport-specific init.
+     */
+    suspend fun initializeElm(timeoutMs: Long = 5000L) {
+        val commands = listOf("ATZ", "ATE0", "ATL0", "ATS0", "ATH0", "ATSP0")
+        for (cmd in commands) {
+            val resp = sendCommand(cmd, timeoutMs = timeoutMs)
+            timber.log.Timber.d("Init $cmd → ${resp ?: "TIMEOUT"}")
+        }
+        timber.log.Timber.i("ELM initialization complete")
+    }
+
     fun disconnect()
     fun release()
     fun enableAutoReconnect()
