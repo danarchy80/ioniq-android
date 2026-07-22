@@ -62,7 +62,8 @@ class VehicleRepository private constructor(private val context: Context) {
 
     private val _connectionState = MutableStateFlow(ObdTransport.ConnectionState.DISCONNECTED)
     val connectionState: StateFlow<ObdTransport.ConnectionState> = _connectionState.asStateFlow()
-
+    private val _isInitialState = MutableStateFlow(true)
+    val isInitialState: StateFlow<Boolean> = _isInitialState.asStateFlow()
     private val _isReconnecting = MutableStateFlow(false)
     val isReconnecting: StateFlow<Boolean> = _isReconnecting.asStateFlow()
 
