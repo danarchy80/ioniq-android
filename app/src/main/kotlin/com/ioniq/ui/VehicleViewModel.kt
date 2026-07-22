@@ -18,6 +18,7 @@ class VehicleViewModel(
     val scanResults: StateFlow<List<BluetoothDevice>> = repo.scanResults
     val scanError: StateFlow<String?> = repo.scanError
     val connectionState: StateFlow<ObdTransport.ConnectionState> = repo.connectionState
+    val isInitialState: StateFlow<Boolean> = repo.isInitialState
     val isReconnecting: StateFlow<Boolean> = repo.isReconnecting
     val reconnectAttempts: StateFlow<Int> = repo.reconnectAttempts
     val connectionError: StateFlow<String?> = repo.connectionError
