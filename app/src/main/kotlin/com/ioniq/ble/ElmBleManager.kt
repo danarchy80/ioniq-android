@@ -130,21 +130,57 @@ class ElmBleManager(context: Context) : ObdTransport {
                 gatt.disconnect()
                 return
             }
-            txChar = service.getCharacteristic(TX_CHAR_UUID)
-            rxChar = service.getCharacteristic(RX_CHAR_UUID)
+            // ELM327 BLE dongles disagree on whether FFF1 or FFF2 is the write (TX)
+            // channel vs the notify (RX) channel. Resolve from the actual GATT
+            // characteristic properties instead of hardcoding FFF1=TX/FFF2=RX —
+            // many adapters (VEEPEAK and most clones) are FFF1=notify/FFF2=write,
+            // which made writeCharacteristic() return false on every command.
+            val fff1 = service.getCharacteristic(TX_CHAR_UUID)
+            val fff2 = service.getCharacteristic(RX_CHAR_UUID)
+
+            fun isWritable(c: BluetoothGattCharacteristic?): Boolean =
+                c != null && (c.properties and (
+                    BluetoothGattCharacteristic.PROPERTY_WRITE or
+                    BluetoothGattCharacteristic.PROPERTY_WRITE_NO_RESPONSE)) != 0
+
+            fun isNotifiable(c: BluetoothGattCharacteristic?): Boolean =
+                c != null && (c.properties and (
+                    BluetoothGattCharacteristic.PROPERTY_NOTIFY or
+                    BluetoothGattCharacteristic.PROPERTY_INDICATE)) != 0
+
+            val tx = when {
+                isWritable(fff1) -> fff1
+                isWritable(fff2) -> fff2
+                else -> null
+            }
+            val rx = when {
+                isNotifiable(fff2) -> fff2
+                isNotifiable(fff1) -> fff1
+                else -> null
+            }
+
+            // If the device exposes no writable or no notifiable characteristic,
+            // it's not a usable BLE ELM327 — fail cleanly instead of polling a dead link.
+            if (tx == null || rx == null) {
+                Timber.e("OBD GATT characteristics unusable: tx=${tx != null} rx=${rx != null}")
+                handshakeFailed("OBD TX/RX characteristic not found — not a BLE ELM327?")
+                gatt.disconnect()
+                return
+            }
+
+            txChar = tx
+            rxChar = rx
 
             // Enable notifications on RX char
-            rxChar?.let { char ->
-                gatt.setCharacteristicNotification(char, true)
-                val cccd = char.getDescriptor(CCCD_UUID)
-                if (cccd != null) {
-                    cccd.value = BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE
-                    handshakePhase = 2
-                    gatt.writeDescriptor(cccd)
-                } else {
-                    // No CCCD — some adapters go straight to writable
-                    finishHandshake()
-                }
+            gatt.setCharacteristicNotification(rx, true)
+            val cccd = rx.getDescriptor(CCCD_UUID)
+            if (cccd != null) {
+                cccd.value = BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE
+                handshakePhase = 2
+                gatt.writeDescriptor(cccd)
+            } else {
+                // No CCCD — some adapters go straight to writable
+                finishHandshake()
             }
         }
 
