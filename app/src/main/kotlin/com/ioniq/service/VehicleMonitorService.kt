@@ -61,9 +61,10 @@ class VehicleMonitorService : Service() {
                 return START_NOT_STICKY
             }
             ACTION_RECONNECT -> {
-                Timber.i("Service received RECONNECT action — delegating to repo")
-                // The repository's own auto-reconnect loop handles this; this
-                // action is a no-op placeholder for explicit user-driven retry.
+                Timber.i("Service received RECONNECT action")
+                serviceScope.launch {
+                    try { repo.reconnect() } catch (e: Exception) { Timber.e(e, "reconnect() failed") }
+                }
             }
         }
 
@@ -81,8 +82,6 @@ class VehicleMonitorService : Service() {
         serviceScope.launch {
             var consecutiveDisconnected = 0
             repo.connectionState
-                .drop(0)
-                .distinctUntilChanged()
                 .collect { state ->
                     val msg = when (state) {
                         ObdTransport.ConnectionState.CONNECTED    -> "Connected — monitoring telemetry"

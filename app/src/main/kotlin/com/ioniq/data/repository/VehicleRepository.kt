@@ -2,6 +2,9 @@ package com.ioniq.data.repository
 
 import android.bluetooth.BluetoothDevice
 import android.content.Context
+import android.content.SharedPreferences
+import androidx.security.crypto.EncryptedSharedPreferences
+import androidx.security.crypto.MasterKey
 import com.ioniq.ble.BleScanner
 import com.ioniq.ble.ClassicBtDeviceProvider
 import com.ioniq.ble.ObdTransport
@@ -108,6 +111,15 @@ class VehicleRepository private constructor(private val context: Context) {
 
     private var pollJob: Job? = null
 
+    // Collector jobs for the connect() StateFlow observers — cancelled on re-connect
+    // so repeated connect/disconnect cycles don't accumulate permanent collectors.
+    private var pollStartJob: Job? = null
+    private var pollStopJob: Job? = null
+
+    // Last connected device + transport hint, for the notification "Reconnect" action.
+    private var lastDevice: BluetoothDevice? = null
+    private var lastHint: TransportHint = TransportHint.AUTO
+
     // ---- Scanning ----
     fun startScan() = scanner.startScan()
     fun stopScan() = scanner.stopScan()
@@ -119,9 +131,19 @@ class VehicleRepository private constructor(private val context: Context) {
 
     /** Connect with explicit transport hint. */
     fun connect(device: BluetoothDevice, hint: TransportHint) {
+        // Leaving the pristine "never connected" state — from here on any
+        // DISCONNECTED transition is a real connection loss, not the initial idle.
+        _isInitialState.value = false
+        lastDevice = device
+        lastHint = hint
+
         // Tear down any previous transport first
         disconnect()
         _connectionError.value = null
+
+        // Cancel any prior connect() collectors so they don't stack up across reconnects
+        pollStartJob?.cancel()
+        pollStopJob?.cancel()
 
         val t = try {
             val created = ObdTransportFactory.create(context, device, hint)
@@ -148,14 +170,14 @@ class VehicleRepository private constructor(private val context: Context) {
         }
 
         // Start polling when connected
-        connectionState
+        pollStartJob = connectionState
             .filter { it == ObdTransport.ConnectionState.CONNECTED }
             .take(1)
             .onEach { startPolling(t) }
             .launchIn(scope)
 
         // Stop polling when disconnected
-        connectionState
+        pollStopJob = connectionState
             .filter { it == ObdTransport.ConnectionState.DISCONNECTED }
             .onEach {
                 pollJob?.cancel()
@@ -190,6 +212,27 @@ class VehicleRepository private constructor(private val context: Context) {
         pollJob = null
     }
 
+    /**
+     * Re-attempt a connection to the last device (used by the notification
+     * "Reconnect" action). No-op if we never connected.
+     */
+    fun reconnect() {
+        val device = lastDevice
+        if (device == null) {
+            Timber.w("reconnect() called with no last device — ignoring")
+            return
+        }
+        Timber.i("Manual reconnect to ${device.address}")
+        val t = transport
+        if (t != null) {
+            // Existing transport still holds the device — re-drive its connect path.
+            t.connectToDevice(device)
+        } else {
+            // Transport was torn down — reconnect fresh with the stored hint.
+            connect(device, lastHint)
+        }
+    }
+
     // ---- PID Polling Loop (works on EITHER transport now) ----
 
     private fun startPolling(t: ObdTransport) {
@@ -220,8 +263,6 @@ class VehicleRepository private constructor(private val context: Context) {
             val NORMAL_DELAY_MS = 2000L
             val VEHICLE_OFF_DELAY_MS = 10_000L
             val ECU_UNREACHABLE_DELAY_MS = 30_000L
-            val RECOVER_THRESHOLD_FAILS = 100 // never give up — let transport
-            // auto-reconnect handle the physical layer
 
             while (isActive && t.connectionState.value == ObdTransport.ConnectionState.CONNECTED) {
 
@@ -351,8 +392,47 @@ class VehicleRepository private constructor(private val context: Context) {
 
     // ---- Home Assistant Integration ----
 
+    /**
+     * Encrypted preferences for HA credentials (WebSocket URL + long-lived token).
+     * Uses a distinct file name from the legacy plaintext "ha_config" prefs so the
+     * one-time migration below can read old values and clear them safely.
+     */
+    private val haPrefs: SharedPreferences by lazy {
+        val masterKey = MasterKey.Builder(context)
+            .setKeyScheme(MasterKey.KeyScheme.AES256_GCM)
+            .build()
+        EncryptedSharedPreferences.create(
+            context,
+            "ha_config_encrypted",
+            masterKey,
+            EncryptedSharedPreferences.PrefKeyEncryptionScheme.AES256_SIV,
+            EncryptedSharedPreferences.PrefValueEncryptionScheme.AES256_GCM
+        )
+    }
+
+    /** One-time migration of the legacy plaintext HA config into encrypted storage. */
+    private fun migrateLegacyHaConfig() {
+        val legacy = context.getSharedPreferences("ha_config", Context.MODE_PRIVATE)
+        val url = legacy.getString("ha_ws_url", null)
+        val token = legacy.getString("ha_token", null)
+        if (url == null && token == null) return // nothing to migrate
+        val enc = haPrefs
+        if (enc.contains("ha_ws_url") || enc.contains("ha_token")) {
+            // Already migrated — just wipe the legacy plaintext copy.
+            legacy.edit().clear().apply()
+            return
+        }
+        enc.edit()
+            .putString("ha_ws_url", url)
+            .putString("ha_token", token)
+            .apply()
+        legacy.edit().clear().apply()
+        Timber.i("Migrated legacy HA config to encrypted storage")
+    }
+
     private fun initHaClient() {
-        val prefs = context.getSharedPreferences("ha_config", Context.MODE_PRIVATE)
+        migrateLegacyHaConfig()
+        val prefs = haPrefs
         val url = prefs.getString("ha_ws_url", null) ?: return
         val token = prefs.getString("ha_token", null) ?: return
 
@@ -371,8 +451,7 @@ class VehicleRepository private constructor(private val context: Context) {
      * Configure Home Assistant connection (called from Settings screen).
      */
     fun configureHomeAssistant(wsUrl: String, token: String) {
-        val prefs = context.getSharedPreferences("ha_config", Context.MODE_PRIVATE)
-        prefs.edit()
+        haPrefs.edit()
             .putString("ha_ws_url", wsUrl)
             .putString("ha_token", token)
             .apply()
@@ -385,7 +464,7 @@ class VehicleRepository private constructor(private val context: Context) {
     fun disconnectHomeAssistant() {
         haClient?.release()
         haClient = null
-        context.getSharedPreferences("ha_config", Context.MODE_PRIVATE).edit().clear().apply()
+        haPrefs.edit().clear().apply()
     }
 
     val haState: StateFlow<HomeAssistantClient.HaState>

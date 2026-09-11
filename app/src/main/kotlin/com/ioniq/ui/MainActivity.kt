@@ -76,8 +76,9 @@ class MainActivity : ComponentActivity() {
 
                 // Observe connection state so we can start/stop the foreground service
                 val connState by viewModel.connectionState.collectAsStateWithLifecycle()
-                LaunchedEffect(connState) {
-                    Timber.i("Connection state changed to $connState")
+                val isInitialState by viewModel.isInitialState.collectAsStateWithLifecycle()
+                LaunchedEffect(connState, isInitialState) {
+                    Timber.i("Connection state changed to $connState (initial=$isInitialState)")
                     if (connState == ObdTransport.ConnectionState.CONNECTED) {
                         // Start foreground service to keep poll running while backgrounded
                         Timber.i("Starting VehicleMonitorService (foreground)")
@@ -87,9 +88,10 @@ class MainActivity : ComponentActivity() {
                         } else {
                             startService(intent)
                         }
-                    } else if (connState == ObdTransport.ConnectionState.DISCONNECTED ||
-                               connState == ObdTransport.ConnectionState.DISCONNECTING) {
-                        // Stop service when disconnected
+                    } else if ((connState == ObdTransport.ConnectionState.DISCONNECTED ||
+                                connState == ObdTransport.ConnectionState.DISCONNECTING) &&
+                               !isInitialState) {
+                        // Stop service on a *real* disconnect, not the initial idle state
                         Timber.i("Stopping VehicleMonitorService")
                         stopService(Intent(this@MainActivity, VehicleMonitorService::class.java))
                     }

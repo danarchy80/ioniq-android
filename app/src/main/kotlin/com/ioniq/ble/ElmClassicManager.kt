@@ -145,7 +145,7 @@ class ElmClassicManager(context: Context) : ObdTransport {
                 if (!connected) {
                     Timber.i("Primary attempts exhausted, trying reflection fallback across channels 1-5...")
                     // Channels commonly used by ELM327 adapters
-                    for (channel in listOf(1)) {
+                    for (channel in 1..5) {
                         if (connected) break
                         Timber.i("Reflection fallback: channel $channel")
                         try {
