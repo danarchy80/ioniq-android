@@ -181,6 +181,98 @@ object ObdParser {
         )
     }
 
+    // ---- Charging session DIDs (E001–E003, hdr 744 → rax 74C) ----
+
+    data class ChargeSession(
+        val obcDcVoltage: Float?,     // V (on-board charger DC out)
+        val obcDcCurrent: Float?,     // A
+        val estimatedPowerKw: Float?  // kW (signed; negative = discharging)
+    )
+
+    /** E001: OBC DC voltage @data16 (/10), current @data18 (/10), est. power @data25 (*10 W, signed). */
+    fun parseChargeController(raw: String?): ChargeSession? {
+        val d = udsData(raw) ?: return null
+        if (d.size < 27) return null
+        val estRaw = (d[25] shl 8) or d[26]
+        val estSigned = if (estRaw > 32767) estRaw - 65536 else estRaw
+        return ChargeSession(
+            obcDcVoltage = ((d[16] shl 8) or d[17]) / 10f,
+            obcDcCurrent = ((d[18] shl 8) or d[19]) / 10f,
+            estimatedPowerKw = estSigned * 10f / 1000f
+        )
+    }
+
+    data class EvseInfo(
+        val maxVoltage: Float?,       // V the EVSE offered
+        val maxCurrent: Float?,       // A the EVSE offered
+        val maxPowerKw: Float?,       // kW the EVSE offered
+        val sessionEnergyKwh: Float?  // kWh delivered this session
+    )
+
+    /** E002: EVSE max V @data6 (/10), max A @data8 (/10), delivered kWh @data20 (/100), max W @data22 (*10). */
+    fun parseEvseInfo(raw: String?): EvseInfo? {
+        val d = udsData(raw) ?: return null
+        if (d.size < 24) return null
+        return EvseInfo(
+            maxVoltage = ((d[6] shl 8) or d[7]) / 10f,
+            maxCurrent = ((d[8] shl 8) or d[9]) / 10f,
+            maxPowerKw = ((d[22] shl 8) or d[23]) * 10f / 1000f,
+            sessionEnergyKwh = ((d[20] shl 8) or d[21]) / 100f
+        )
+    }
+
+    data class ChargeTargets(
+        val hvTargetVoltage: Float?,  // V the BMS is requesting
+        val hvTargetCurrent: Float?,  // A the BMS is requesting
+        val acTimeRemainingMin: Int,  // min after plug-in (AC)
+        val dcTimeRemainingMin: Int   // min after plug-in (DC)
+    )
+
+    /** E003: BMS target V @data21 (/10), target A @data23 (/10), AC time @data39, DC time @data41 (min). */
+    fun parseChargeTargets(raw: String?): ChargeTargets? {
+        val d = udsData(raw) ?: return null
+        if (d.size < 43) return null
+        return ChargeTargets(
+            hvTargetVoltage = ((d[21] shl 8) or d[22]) / 10f,
+            hvTargetCurrent = ((d[23] shl 8) or d[24]) / 10f,
+            acTimeRemainingMin = (d[39] shl 8) or d[40],
+            dcTimeRemainingMin = (d[41] shl 8) or d[42]
+        )
+    }
+
+    // ---- Battery health / lifetime DIDs (0101, 0111 — hdr 7E4) ----
+
+    /** 0101 @7E4: HV isolation resistance @data54 (u16, kΩ). */
+    fun parseIsolationResistance(raw: String?): Int? {
+        val d = udsData(raw) ?: return null
+        if (d.size < 56) return null
+        return (d[54] shl 8) or d[55]
+    }
+
+    data class LifetimeCharging(
+        val acCount: Long, val dcCount: Long,
+        val acEnergyKwh: Long, val dcEnergyKwh: Long
+    )
+
+    /** 0111 @7E4: AC count @data1, DC count @data5, AC kWh @data9, DC kWh @data13 (all u32). */
+    fun parseLifetimeCharging(raw: String?): LifetimeCharging? {
+        val d = udsData(raw) ?: return null
+        if (d.size < 17) return null
+        fun u32(i: Int) = ((d[i].toLong() shl 24) or (d[i + 1].toLong() shl 16) or
+            (d[i + 2].toLong() shl 8) or d[i + 3].toLong())
+        return LifetimeCharging(
+            acCount = u32(1), dcCount = u32(5),
+            acEnergyKwh = u32(9), dcEnergyKwh = u32(13)
+        )
+    }
+
+    /** Strip the 62 <DID hi> <DID lo> header, returning the payload bytes. */
+    private fun udsData(raw: String?): List<Int>? {
+        if (isBad(raw)) return null
+        val hex = cleanResponse(raw!!).replace(Regex("^[0-9A-Fa-f]{6}\\s*"), "")
+        return toIntList(hex)
+    }
+
     // ---- Private helpers ----
 
     private fun isBad(raw: String?): Boolean {

@@ -40,7 +40,25 @@ data class VehicleTelemetry(
     val tpmsRlTemp: Float? = null, val tpmsRrTemp: Float? = null,
 
     // ---- Full cell voltages (UDS DIDs 0102–010C), mV, comma-separated ----
-    val cellVoltagesCsv: String? = null
+    val cellVoltagesCsv: String? = null,
+
+    // ---- Charging session (UDS DIDs E001–E003 @ 744) ----
+    val evseMaxVoltage: Float? = null,        // V offered by EVSE
+    val evseMaxCurrent: Float? = null,        // A offered by EVSE
+    val evseMaxPowerKw: Float? = null,        // kW offered by EVSE
+    val evseSessionEnergyKwh: Float? = null,  // kWh delivered this session
+    val bmsTargetVoltage: Float? = null,      // V requested by BMS
+    val bmsTargetCurrent: Float? = null,      // A requested by BMS
+    val chargeTimeRemainingMin: Int? = null,  // minutes (AC or DC per state)
+
+    // ---- Lifetime charging stats (UDS DID 0111 @ 7E4) ----
+    val acChargeCount: Long? = null,
+    val dcChargeCount: Long? = null,
+    val acChargeEnergyKwh: Long? = null,
+    val dcChargeEnergyKwh: Long? = null,
+
+    // ---- HV isolation (UDS DID 0101 @ 7E4) ----
+    val isolationResistanceKohm: Int? = null
 )
 
 enum class ChargingState {

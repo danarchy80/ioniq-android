@@ -102,10 +102,26 @@ object ObdPids {
     /** TPMS: 4× pressure (psi = byte/5) + 4× temp (°C = byte−40) (hdr 7A0 → rax 7A8) */
     const val TPMS = "22C00B"
 
+    /** Charge controller: OBC DC V/A + estimated charging power (hdr 744 → rax 74C) */
+    const val CHARGE_CONTROLLER = "22E001"
+
+    /** EVSE handshake limits: max V/A/power + session energy (hdr 744 → rax 74C) */
+    const val EVSE_INFO = "22E002"
+
+    /** Charge targets: BMS target V/A + time remaining after plug-in (hdr 744 → rax 74C) */
+    const val CHARGE_TARGETS = "22E003"
+
+    /** HV isolation resistance in kΩ (hdr 7E4 → rax 7EC, same ECU as cells) */
+    const val HV_ISOLATION = "220101"
+
+    /** Lifetime charging stats: AC/DC session counts + energy totals (hdr 7E4) */
+    const val LIFETIME_CHARGING = "220111"
+
     // ELM327 send-header switches for the ECUs above.
     const val HDR_BMS = "ATSH7E4"
     const val HDR_LDC = "ATSH7E5"
     const val HDR_TPMS = "ATSH7A0"
+    const val HDR_CCS = "ATSH744"
     const val HDR_DEFAULT = "ATSH7DF"
 
     // NOTE: parseStandardOBD() and parseSoc() were removed — they were dead code

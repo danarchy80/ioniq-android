@@ -30,6 +30,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.ioniq.ble.ObdTransport
+import com.ioniq.data.model.ChargingState
 import com.ioniq.data.model.VehicleTelemetry
 import com.ioniq.data.repository.VehicleRepository
 import com.ioniq.ui.theme.IoniqBorder
@@ -223,6 +224,76 @@ fun TelemetryDashboard(telemetry: VehicleTelemetry?) {
             }
         }
 
+        // ── Charging session (UDS E001–E003, while plugged in) ──
+        if (telemetry.chargingState == ChargingState.CHARGING_AC ||
+            telemetry.chargingState == ChargingState.CHARGING_DC
+        ) {
+            item {
+                val evseKw = telemetry.evseMaxPowerKw
+                val bmsKw = if (telemetry.bmsTargetVoltage != null && telemetry.bmsTargetCurrent != null)
+                    telemetry.bmsTargetVoltage!! * telemetry.bmsTargetCurrent!! / 1000f else null
+                SectionHeader("Charging Session") {
+                    when {
+                        evseKw != null && bmsKw != null && evseKw < bmsKw * 0.95f ->
+                            StatusPill(text = "EVSE-limited", color = ChipWarn)
+                        evseKw != null && bmsKw != null ->
+                            StatusPill(text = "BMS-limited", color = ChipAccent)
+                    }
+                }
+            }
+            item {
+                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Row(horizontalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.fillMaxWidth()) {
+                        MetricTile(
+                            label = "EVSE Max",
+                            value = telemetry.evseMaxPowerKw?.let { "%.0f".format(it) } ?: "—",
+                            unit = "kW",
+                            tint = ChipWarn,
+                            modifier = Modifier.weight(1f),
+                            fraction = telemetry.evseMaxPowerKw?.let { (it / 350f).coerceIn(0f, 1f) }
+                        )
+                        MetricTile(
+                            label = "BMS Target",
+                            value = (telemetry.bmsTargetVoltage?.let { v ->
+                                telemetry.bmsTargetCurrent?.let { a -> "%.0f".format(v * a / 1000f) }
+                            }) ?: "—",
+                            unit = "kW",
+                            tint = ChipAccent,
+                            modifier = Modifier.weight(1f),
+                            fraction = telemetry.bmsTargetCurrent?.let { (it / 400f).coerceIn(0f, 1f) }
+                        )
+                    }
+                    Row(horizontalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.fillMaxWidth()) {
+                        MetricTile(
+                            label = "Time Left",
+                            value = telemetry.chargeTimeRemainingMin?.let {
+                                if (it >= 60) "${it / 60}h %02dm".format(it % 60) else "${it}m"
+                            } ?: "—",
+                            unit = "",
+                            tint = ChipGood,
+                            modifier = Modifier.weight(1f)
+                        )
+                        MetricTile(
+                            label = "Session Energy",
+                            value = telemetry.evseSessionEnergyKwh?.let { "%.1f".format(it) } ?: "—",
+                            unit = "kWh",
+                            tint = ChipGood,
+                            modifier = Modifier.weight(1f),
+                            fraction = telemetry.evseSessionEnergyKwh?.let { (it / 100f).coerceIn(0f, 1f) }
+                        )
+                    }
+                    if (telemetry.evseMaxVoltage != null && telemetry.evseMaxCurrent != null) {
+                        Text(
+                            "EVSE HANDSHAKE ${"%.0f".format(telemetry.evseMaxVoltage)} V · ${"%.0f".format(telemetry.evseMaxCurrent)} A",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = ChipNeutral,
+                            letterSpacing = 1.5.sp
+                        )
+                    }
+                }
+            }
+        }
+
         // ── Cell voltages + equilibrium ──
         item {
             val min = telemetry.cellVoltageMin
@@ -299,6 +370,28 @@ fun TelemetryDashboard(telemetry: VehicleTelemetry?) {
             }
         }
 
+        // ── Battery health: HV isolation ──
+        telemetry.isolationResistanceKohm?.let { iso ->
+            item {
+                SectionHeader("Battery Health") {
+                    StatusPill(
+                        text = if (iso >= 500) "Isolation OK" else if (iso >= 100) "Isolation Watch" else "Isolation Fault",
+                        color = if (iso >= 500) ChipGood else if (iso >= 100) ChipWarn else ChipBad
+                    )
+                }
+            }
+            item {
+                MetricTile(
+                    label = "HV Isolation Resistance",
+                    value = "%,d".format(iso),
+                    unit = "kΩ",
+                    tint = if (iso >= 500) ChipGood else if (iso >= 100) ChipWarn else ChipBad,
+                    modifier = Modifier.fillMaxWidth(),
+                    fraction = (iso / 2000f).coerceIn(0f, 1f)
+                )
+            }
+        }
+
         // ── 12V auxiliary battery ──
         if (telemetry.auxBatteryVoltage != null) {
             item {
@@ -365,6 +458,47 @@ fun TelemetryDashboard(telemetry: VehicleTelemetry?) {
                     Row(horizontalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.fillMaxWidth()) {
                         TireTile("RL", telemetry.tpmsRlPsi, telemetry.tpmsRlTemp, Modifier.weight(1f))
                         TireTile("RR", telemetry.tpmsRrPsi, telemetry.tpmsRrTemp, Modifier.weight(1f))
+                    }
+                }
+            }
+        }
+
+        // ── Lifetime charging stats (UDS 0111) ──
+        if (telemetry.acChargeCount != null || telemetry.dcChargeCount != null) {
+            item { SectionHeader("Lifetime Charging") }
+            item {
+                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Row(horizontalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.fillMaxWidth()) {
+                        MetricTile(
+                            label = "AC Sessions",
+                            value = telemetry.acChargeCount?.toString() ?: "—",
+                            unit = "",
+                            tint = ChipAccent,
+                            modifier = Modifier.weight(1f)
+                        )
+                        MetricTile(
+                            label = "AC Energy",
+                            value = telemetry.acChargeEnergyKwh?.let { "%,d".format(it) } ?: "—",
+                            unit = "kWh",
+                            tint = ChipAccent,
+                            modifier = Modifier.weight(1f)
+                        )
+                    }
+                    Row(horizontalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.fillMaxWidth()) {
+                        MetricTile(
+                            label = "DC Sessions",
+                            value = telemetry.dcChargeCount?.toString() ?: "—",
+                            unit = "",
+                            tint = ChipWarn,
+                            modifier = Modifier.weight(1f)
+                        )
+                        MetricTile(
+                            label = "DC Energy",
+                            value = telemetry.dcChargeEnergyKwh?.let { "%,d".format(it) } ?: "—",
+                            unit = "kWh",
+                            tint = ChipWarn,
+                            modifier = Modifier.weight(1f)
+                        )
                     }
                 }
             }

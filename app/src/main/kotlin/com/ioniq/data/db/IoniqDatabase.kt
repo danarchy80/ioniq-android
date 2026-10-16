@@ -9,7 +9,7 @@ import com.ioniq.data.model.VehicleTelemetry
 
 @Database(
     entities = [VehicleTelemetry::class, CellReading::class],
-    version = 4,
+    version = 5,
     exportSchema = false
 )
 abstract class IoniqDatabase : RoomDatabase() {
