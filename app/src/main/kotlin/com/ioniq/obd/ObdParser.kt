@@ -113,6 +113,74 @@ object ObdParser {
         return (bytes[0] shl 8) or bytes[1]
     }
 
+    // ---- UDS DID parsers (OBDb signal set formats) ----
+
+    /**
+     * One 32-cell voltage block (DIDs 0102/0103/0104/010A/010B/010C).
+     * Message: 62 <DID hi> <DID lo> <filler> then 32 × 8-bit cells, V = byte/50.
+     * Returns cell voltages in mV (zero/absent cells dropped).
+     */
+    fun parseCellBlock(raw: String?): List<Int> {
+        if (isBad(raw)) return emptyList()
+        val cleaned = cleanResponse(raw!!)
+        // Strip service+DID header (62 01 02 = 3 bytes)
+        val hex = cleaned.replace(Regex("^[0-9A-Fa-f]{6}\\s*"), "")
+        val bytes = toIntList(hex)
+        return bytes.drop(1).take(32)
+            .map { it * 20 }            // byte/50 volts → mV = byte*20
+            .filter { it > 0 }
+    }
+
+    data class AuxBattery(
+        val voltage: Float?,           // V
+        val current: Float?,           // A (signed, + = charging)
+        val soc: Float?,               // %
+        val temp: Float?               // °C
+    )
+
+    /**
+     * 12V aux battery block (DID E011, hdr 7E5).
+     * Data offsets (after 62 E0 11): current @15 (s16/100), SOC @17 (u8),
+     * voltage @18 (u16/1000), temp @20 (u16/2 − 40).
+     */
+    fun parseAuxBattery(raw: String?): AuxBattery? {
+        if (isBad(raw)) return null
+        val cleaned = cleanResponse(raw!!)
+        val hex = cleaned.replace(Regex("^[0-9A-Fa-f]{6}\\s*"), "")
+        val d = toIntList(hex)
+        if (d.size < 22) return null
+        val curRaw = (d[15] shl 8) or d[16]
+        val cur = (if (curRaw > 32767) curRaw - 65536 else curRaw) / 100f
+        val soc = d[17].toFloat()
+        val volt = ((d[18] shl 8) or d[19]) / 1000f
+        val temp = ((d[20] shl 8) or d[21]) / 2f - 40f
+        return AuxBattery(voltage = volt, current = cur, soc = soc, temp = temp)
+    }
+
+    data class Tpms(
+        val flPsi: Float, val frPsi: Float, val rlPsi: Float, val rrPsi: Float,
+        val flTemp: Float, val frTemp: Float, val rlTemp: Float, val rrTemp: Float
+    )
+
+    /**
+     * TPMS block (DID C00B, hdr 7A0).
+     * Data offsets (after 62 C0 0B): FL p@1 t@2, FR p@5 t@6, RL p@9 t@10, RR p@13 t@14.
+     * Pressure psi = byte/5; temp °C = byte − 40.
+     */
+    fun parseTpms(raw: String?): Tpms? {
+        if (isBad(raw)) return null
+        val cleaned = cleanResponse(raw!!)
+        val hex = cleaned.replace(Regex("^[0-9A-Fa-f]{6}\\s*"), "")
+        val d = toIntList(hex)
+        if (d.size < 15) return null
+        return Tpms(
+            flPsi = d[1] / 5f,  flTemp = d[2] - 40f,
+            frPsi = d[5] / 5f,  frTemp = d[6] - 40f,
+            rlPsi = d[9] / 5f,  rlTemp = d[10] - 40f,
+            rrPsi = d[13] / 5f, rrTemp = d[14] - 40f
+        )
+    }
+
     // ---- Private helpers ----
 
     private fun isBad(raw: String?): Boolean {

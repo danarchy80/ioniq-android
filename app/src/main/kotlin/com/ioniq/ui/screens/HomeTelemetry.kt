@@ -277,6 +277,99 @@ fun TelemetryDashboard(telemetry: VehicleTelemetry?) {
             }
         }
 
+        // ── Full cell heatmap (UDS 192-cell block) ──
+        val fullCells = telemetry.cellVoltagesCsv
+            ?.split(",")?.mapNotNull { it.trim().toIntOrNull() } ?: emptyList()
+        if (fullCells.isNotEmpty()) {
+            item {
+                SectionHeader("Cell Heatmap") {
+                    Text(
+                        "${fullCells.size} CELLS",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = ChipNeutral
+                    )
+                }
+            }
+            item {
+                IoniqCard(modifier = Modifier.fillMaxWidth()) {
+                    Column(Modifier.fillMaxWidth()) {
+                        CellHeatmap(cells = fullCells)
+                    }
+                }
+            }
+        }
+
+        // ── 12V auxiliary battery ──
+        if (telemetry.auxBatteryVoltage != null) {
+            item {
+                SectionHeader("12V Auxiliary Battery") {
+                    val v = telemetry.auxBatteryVoltage
+                    if (v != null && v < 12.2f) StatusPill(text = "Low", color = ChipBad)
+                }
+            }
+            item {
+                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Row(horizontalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.fillMaxWidth()) {
+                        MetricTile(
+                            label = "Voltage",
+                            value = telemetry.auxBatteryVoltage?.let { "%.2f".format(it) } ?: "—",
+                            unit = "V",
+                            tint = when {
+                                (telemetry.auxBatteryVoltage ?: 99f) < 12.2f -> ChipBad
+                                (telemetry.auxBatteryVoltage ?: 99f) < 12.6f -> ChipWarn
+                                else -> ChipGood
+                            },
+                            modifier = Modifier.weight(1f),
+                            fraction = telemetry.auxBatteryVoltage?.let { ((it - 11f) / 5f) }
+                        )
+                        MetricTile(
+                            label = "Current",
+                            value = telemetry.auxBatteryCurrent?.let { "%.1f".format(it) } ?: "—",
+                            unit = "A",
+                            tint = if ((telemetry.auxBatteryCurrent ?: 0f) >= 0f) ChipGood else ChipWarn,
+                            modifier = Modifier.weight(1f),
+                            fraction = telemetry.auxBatteryCurrent?.let { (kotlin.math.abs(it) / 30f) }
+                        )
+                    }
+                    Row(horizontalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.fillMaxWidth()) {
+                        MetricTile(
+                            label = "Aux SOC",
+                            value = telemetry.auxBatterySoc?.let { "%.0f".format(it) } ?: "—",
+                            unit = "%",
+                            tint = socColor(telemetry.auxBatterySoc),
+                            modifier = Modifier.weight(1f),
+                            fraction = telemetry.auxBatterySoc?.let { (it / 100f) }
+                        )
+                        MetricTile(
+                            label = "Aux Temp",
+                            value = telemetry.auxBatteryTemp?.let { "%.0f".format(it) } ?: "—",
+                            unit = "°C",
+                            tint = tempColor(telemetry.auxBatteryTemp),
+                            modifier = Modifier.weight(1f),
+                            fraction = telemetry.auxBatteryTemp?.let { ((it + 20f) / 80f) }
+                        )
+                    }
+                }
+            }
+        }
+
+        // ── TPMS ──
+        if (telemetry.tpmsFlPsi != null) {
+            item { SectionHeader("Tires") }
+            item {
+                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Row(horizontalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.fillMaxWidth()) {
+                        TireTile("FL", telemetry.tpmsFlPsi, telemetry.tpmsFlTemp, Modifier.weight(1f))
+                        TireTile("FR", telemetry.tpmsFrPsi, telemetry.tpmsFrTemp, Modifier.weight(1f))
+                    }
+                    Row(horizontalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.fillMaxWidth()) {
+                        TireTile("RL", telemetry.tpmsRlPsi, telemetry.tpmsRlTemp, Modifier.weight(1f))
+                        TireTile("RR", telemetry.tpmsRrPsi, telemetry.tpmsRrTemp, Modifier.weight(1f))
+                    }
+                }
+            }
+        }
+
         // ── Cumulative energy ──
         item { SectionHeader("Cumulative Energy") }
         item {

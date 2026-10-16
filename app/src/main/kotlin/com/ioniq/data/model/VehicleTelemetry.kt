@@ -25,7 +25,22 @@ data class VehicleTelemetry(
     val chargingState: ChargingState = ChargingState.NOT_CHARGING,
     val chargePower: Float? = null,          // kW
     val cumulativeEnergyCharged: Float? = null,   // kWh
-    val cumulativeEnergyDischarged: Float? = null  // kWh
+    val cumulativeEnergyDischarged: Float? = null, // kWh
+
+    // ---- 12V aux battery (UDS DID E011) ----
+    val auxBatteryVoltage: Float? = null,    // V
+    val auxBatteryCurrent: Float? = null,    // A (+ = charging)
+    val auxBatterySoc: Float? = null,        // %
+    val auxBatteryTemp: Float? = null,       // °C
+
+    // ---- TPMS (UDS DID C00B) ----
+    val tpmsFlPsi: Float? = null, val tpmsFrPsi: Float? = null,
+    val tpmsRlPsi: Float? = null, val tpmsRrPsi: Float? = null,
+    val tpmsFlTemp: Float? = null, val tpmsFrTemp: Float? = null,
+    val tpmsRlTemp: Float? = null, val tpmsRrTemp: Float? = null,
+
+    // ---- Full cell voltages (UDS DIDs 0102–010C), mV, comma-separated ----
+    val cellVoltagesCsv: String? = null
 )
 
 enum class ChargingState {

@@ -84,6 +84,30 @@ object ObdPids {
     /** Cumulative energy discharged (kWh) */
     const val CUMULATIVE_ENERGY_DISCHARGED = "22B00B"
 
+    // ---- UDS DID blocks from OBDb/Hyundai-IONIQ-5 signal set ----
+    // These DIDs live on specific ECUs and need the send header switched
+    // via ATSH before the 22 <DID> request. Response = 62 <DID> + data.
+
+    /** Full cell voltages: 6 blocks × 32 cells, 8-bit, V = byte/50 (hdr 7E4 → rax 7EC) */
+    const val CELL_BLOCK_1 = "220102"   // cells 1–32
+    const val CELL_BLOCK_2 = "220103"   // cells 33–64
+    const val CELL_BLOCK_3 = "220104"   // cells 65–96
+    const val CELL_BLOCK_4 = "22010A"   // cells 97–128
+    const val CELL_BLOCK_5 = "22010B"   // cells 129–160
+    const val CELL_BLOCK_6 = "22010C"   // cells 161–192
+
+    /** 12V aux battery + DC-DC converter block (hdr 7E5 → rax 7ED) */
+    const val AUX_BATTERY = "22E011"
+
+    /** TPMS: 4× pressure (psi = byte/5) + 4× temp (°C = byte−40) (hdr 7A0 → rax 7A8) */
+    const val TPMS = "22C00B"
+
+    // ELM327 send-header switches for the ECUs above.
+    const val HDR_BMS = "ATSH7E4"
+    const val HDR_LDC = "ATSH7E5"
+    const val HDR_TPMS = "ATSH7A0"
+    const val HDR_DEFAULT = "ATSH7DF"
+
     // NOTE: parseStandardOBD() and parseSoc() were removed — they were dead code
     // (never called). All OBD parsing flows through ObdParser.parseResponse() /
     // ObdParser.parseSoc() which use safe mapNotNull + runCatching for hex parsing.

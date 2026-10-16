@@ -417,6 +417,93 @@ fun EnergyRow(
     }
 }
 
+// ─────────────────────────── Tire tile (TPMS) ───────────────────────────
+
+@Composable
+fun TireTile(
+    label: String,
+    psi: Float?,
+    temp: Float?,
+    modifier: Modifier = Modifier
+) {
+    MetricTile(
+        label = if (temp != null) "$label · ${"%.0f".format(temp)}°C" else label,
+        value = psi?.let { "%.1f".format(it) } ?: "—",
+        unit = "psi",
+        tint = when {
+            psi == null -> ChipNeutral
+            psi < 30f || psi > 42f -> ChipBad
+            psi < 32f -> ChipWarn
+            else -> ChipGood
+        },
+        modifier = modifier,
+        fraction = psi?.let { ((it - 25f) / 20f).coerceIn(0f, 1f) }
+    )
+}
+
+// ─────────────────────────── Cell heatmap ───────────────────────────
+// Full-pack grid: one tile per cell, colored by absolute health, with the
+// weakest cell ringed in crimson and the strongest in cyan.
+
+@Composable
+fun CellHeatmap(
+    cells: List<Int>,          // mV per cell
+    modifier: Modifier = Modifier,
+    columns: Int = 12
+) {
+    if (cells.isEmpty()) return
+    val minMv = cells.min()
+    val maxMv = cells.max()
+    val minIdx = cells.indexOf(minMv)
+    val maxIdx = cells.indexOf(maxMv)
+    Column(
+        modifier = modifier.fillMaxWidth(),
+        verticalArrangement = Arrangement.spacedBy(3.dp)
+    ) {
+        cells.chunked(columns).forEachIndexed { rowIdx, row ->
+            Row(horizontalArrangement = Arrangement.spacedBy(3.dp), modifier = Modifier.fillMaxWidth()) {
+                row.forEachIndexed { colIdx, mv ->
+                    val idx = rowIdx * columns + colIdx
+                    val ring = when (idx) {
+                        minIdx -> ChipBad
+                        maxIdx -> ChipAccent
+                        else -> null
+                    }
+                    Box(
+                        Modifier
+                            .weight(1f)
+                            .height(16.dp)
+                            .clip(RoundedCornerShape(3.dp))
+                            .background(cellColor(mv).copy(alpha = 0.85f))
+                            .then(
+                                if (ring != null) Modifier.border(1.5.dp, ring, RoundedCornerShape(3.dp))
+                                else Modifier
+                            )
+                    )
+                }
+                // pad incomplete last row
+                repeat(columns - row.size) {
+                    Box(Modifier.weight(1f).height(16.dp))
+                }
+            }
+        }
+        Spacer(Modifier.height(8.dp))
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween
+        ) {
+            Text(
+                "WEAKEST #${minIdx + 1} · ${minMv} mV",
+                style = MaterialTheme.typography.labelSmall, color = ChipBad
+            )
+            Text(
+                "STRONGEST #${maxIdx + 1} · ${maxMv} mV",
+                style = MaterialTheme.typography.labelSmall, color = ChipAccent
+            )
+        }
+    }
+}
+
 // ─────────────────────────── Icon button pill (header gear) ───────────────────────────
 
 @Composable

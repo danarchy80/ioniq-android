@@ -24,8 +24,8 @@ android {
         applicationId = "com.ioniq.android"
         minSdk = 26
         targetSdk = 34
-        versionCode = 13
-        versionName = "1.0.0-beta.13"
+        versionCode = 14
+        versionName = "1.0.0-beta.14"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 

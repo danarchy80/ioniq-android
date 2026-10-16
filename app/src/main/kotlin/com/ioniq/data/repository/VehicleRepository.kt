@@ -284,6 +284,9 @@ class VehicleRepository private constructor(private val context: Context) {
                     var cellMin: Int? = null
                     var cellMax: Int? = null
                     var cellVoltages: List<CellReading>? = null
+                    var fullCells: List<Int>? = null          // 192-cell mV list (UDS)
+                    var aux: ObdParser.AuxBattery? = null     // 12V aux battery
+                    var tpms: ObdParser.Tpms? = null          // tire pressures
 
                     if (slowTick % 5 == 0) {
                         cumCharge = t.readPid(ObdPids.CUMULATIVE_ENERGY_CHARGED)?.let {
@@ -300,6 +303,20 @@ class VehicleRepository private constructor(private val context: Context) {
                         cellMax = cellData?.maxOfOrNull { it.voltage }?.toInt()
                     }
 
+                    // UDS DID block (~every 30 s): full cells + 12V + TPMS.
+                    // Switches ELM send headers per-ECU and always restores the
+                    // default header afterwards so the rapid poll keeps working.
+                    if (slowTick % 15 == 0) {
+                        val (udsCells, udsAux, udsTpms) = readUdsBlock(t)
+                        fullCells = udsCells
+                        aux = udsAux
+                        tpms = udsTpms
+                        if (udsCells != null) {
+                            cellMin = udsCells.minOrNull()
+                            cellMax = udsCells.maxOrNull()
+                        }
+                    }
+
                     val telemetry = VehicleTelemetry(
                         id = 0,
                         timestamp = now,
@@ -313,7 +330,16 @@ class VehicleRepository private constructor(private val context: Context) {
                         cumulativeEnergyCharged = cumCharge,
                         cumulativeEnergyDischarged = cumDischarge,
                         cellVoltageMin = cellMin,
-                        cellVoltageMax = cellMax
+                        cellVoltageMax = cellMax,
+                        auxBatteryVoltage = aux?.voltage,
+                        auxBatteryCurrent = aux?.current,
+                        auxBatterySoc = aux?.soc,
+                        auxBatteryTemp = aux?.temp,
+                        tpmsFlPsi = tpms?.flPsi, tpmsFrPsi = tpms?.frPsi,
+                        tpmsRlPsi = tpms?.rlPsi, tpmsRrPsi = tpms?.rrPsi,
+                        tpmsFlTemp = tpms?.flTemp, tpmsFrTemp = tpms?.frTemp,
+                        tpmsRlTemp = tpms?.rlTemp, tpmsRrTemp = tpms?.rrTemp,
+                        cellVoltagesCsv = fullCells?.joinToString(",")
                     )
 
                     // Detect unresponsive adapter: all critical PIDs returned null
@@ -345,6 +371,11 @@ class VehicleRepository private constructor(private val context: Context) {
                     val rowId = telemetryDao.insert(telemetry)
                     cellVoltages?.forEach { cell ->
                         cellReadingDao.insert(cell.copy(telemetryId = rowId))
+                    }
+                    fullCells?.forEachIndexed { i, mv ->
+                        cellReadingDao.insert(
+                            CellReading(telemetryId = rowId, cellIndex = i, voltage = mv.toFloat())
+                        )
                     }
 
                     _vehicleState.value = telemetry
@@ -388,6 +419,46 @@ class VehicleRepository private constructor(private val context: Context) {
 
             Timber.i("Polling loop ended")
         }
+    }
+
+    // ---- UDS DID block (cells / 12V / TPMS) ----
+
+    /**
+     * Reads the UDS DID block: 192 cell voltages (BMS @ 7E4), 12V aux
+     * battery (LDC @ 7E5), TPMS (IPC @ 7A0). Each ECU needs the ELM327
+     * send header switched via ATSH first; the default header is always
+     * restored in `finally` so the rapid poll keeps working even if this
+     * block fails partway (cheap ELM clones can choke on header switches).
+     */
+    private suspend fun readUdsBlock(t: ObdTransport): Triple<List<Int>?, ObdParser.AuxBattery?, ObdParser.Tpms?> {
+        var cells: List<Int>? = null
+        var aux: ObdParser.AuxBattery? = null
+        var tpms: ObdParser.Tpms? = null
+        try {
+            t.sendCommand(ObdPids.HDR_BMS, timeoutMs = 2000)
+            val blocks = listOf(
+                ObdPids.CELL_BLOCK_1, ObdPids.CELL_BLOCK_2, ObdPids.CELL_BLOCK_3,
+                ObdPids.CELL_BLOCK_4, ObdPids.CELL_BLOCK_5, ObdPids.CELL_BLOCK_6
+            ).mapNotNull { pid -> t.readPid(pid)?.let(ObdParser::parseCellBlock) }
+            // Accept only if a plausible number of cells came back
+            // (model years vary: 98 / 108 / 192 cell packs).
+            if (blocks.sumOf { it.size } >= 90) cells = blocks.flatten()
+
+            t.sendCommand(ObdPids.HDR_LDC, timeoutMs = 2000)
+            aux = t.readPid(ObdPids.AUX_BATTERY)?.let(ObdParser::parseAuxBattery)
+
+            t.sendCommand(ObdPids.HDR_TPMS, timeoutMs = 2000)
+            tpms = t.readPid(ObdPids.TPMS)?.let(ObdParser::parseTpms)
+        } catch (e: TimeoutCancellationException) {
+            Timber.w("UDS block timed out: ${e.message}")
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            Timber.w(e, "UDS block read failed")
+        } finally {
+            runCatching { t.sendCommand(ObdPids.HDR_DEFAULT, timeoutMs = 2000) }
+        }
+        return Triple(cells, aux, tpms)
     }
 
     // ---- Home Assistant Integration ----
