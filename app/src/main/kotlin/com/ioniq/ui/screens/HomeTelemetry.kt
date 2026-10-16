@@ -3,8 +3,6 @@ package com.ioniq.ui.screens
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.ExperimentalLayoutApi
-import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -15,24 +13,9 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.BatteryChargingFull
-import androidx.compose.material.icons.filled.Bolt
-import androidx.compose.material.icons.filled.ElectricBolt
-import androidx.compose.material.icons.filled.Link
 import androidx.compose.material.icons.filled.LinkOff
-import androidx.compose.material.icons.filled.Numbers
 import androidx.compose.material.icons.filled.Power
-import androidx.compose.material.icons.filled.Speed
-import androidx.compose.material.icons.filled.Sync
-import androidx.compose.material.icons.filled.SyncDisabled
-import androidx.compose.material.icons.filled.Thermostat
-import androidx.compose.material.icons.filled.Warning
-import androidx.compose.material3.AssistChip
-import androidx.compose.material3.AssistChipDefaults
-import androidx.compose.material3.Card
-import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.LinearProgressIndicator
@@ -49,6 +32,9 @@ import androidx.compose.ui.unit.sp
 import com.ioniq.ble.ObdTransport
 import com.ioniq.data.model.VehicleTelemetry
 import com.ioniq.data.repository.VehicleRepository
+import com.ioniq.ui.theme.IoniqBorder
+import com.ioniq.ui.theme.IoniqSurfaceHigh
+import com.ioniq.ui.theme.JetBrainsMono
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -61,58 +47,41 @@ fun ConnectionStatusCard(
     isReconnecting: Boolean,
     attempts: Int
 ) {
-    Card(
-        modifier = Modifier.fillMaxWidth(),
-        colors = CardDefaults.cardColors(
-            containerColor = when (state) {
-                ObdTransport.ConnectionState.CONNECTED -> ChipBg
-                ObdTransport.ConnectionState.CONNECTING -> Color(0xFF1E2A3A)
-                ObdTransport.ConnectionState.DISCONNECTING -> Color(0xFF2A1E1E)
-                ObdTransport.ConnectionState.DISCONNECTED -> Color(0xFF2A1B1B)
-            }
-        ),
-        shape = RoundedCornerShape(12.dp)
-    ) {
-        Row(
-            modifier = Modifier.padding(16.dp).fillMaxWidth(),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            val (icon: ImageVector, tint: Color) = when (state) {
-                ObdTransport.ConnectionState.CONNECTED -> Icons.Default.Link to ChipGood
-                ObdTransport.ConnectionState.CONNECTING -> Icons.Default.Sync to ChipWarn
-                ObdTransport.ConnectionState.DISCONNECTING -> Icons.Default.SyncDisabled to ChipWarn
-                ObdTransport.ConnectionState.DISCONNECTED -> Icons.Default.LinkOff to ChipBad
-            }
-            Icon(
-                imageVector = icon,
-                contentDescription = null,
-                modifier = Modifier.size(28.dp),
-                tint = tint
-            )
-            Spacer(Modifier.width(12.dp))
-            Column(modifier = Modifier.weight(1f)) {
-                Text(
-                    text = when {
-                        isReconnecting -> "Reconnecting (attempt $attempts/5)…"
-                        else -> when (state) {
-                            ObdTransport.ConnectionState.CONNECTED -> "Connected"
-                            ObdTransport.ConnectionState.CONNECTING -> "Connecting…"
-                            ObdTransport.ConnectionState.DISCONNECTING -> "Disconnecting…"
-                            ObdTransport.ConnectionState.DISCONNECTED -> "Disconnected"
-                        }
-                    },
-                    style = MaterialTheme.typography.titleSmall,
-                    fontWeight = FontWeight.SemiBold,
-                    color = ChipValue
+    val (pillText, pillColor) = when {
+        isReconnecting -> "Reconnecting $attempts/5" to ChipWarn
+        else -> when (state) {
+            ObdTransport.ConnectionState.CONNECTED -> "Live" to ChipGood
+            ObdTransport.ConnectionState.CONNECTING -> "Connecting" to ChipWarn
+            ObdTransport.ConnectionState.DISCONNECTING -> "Disconnecting" to ChipWarn
+            ObdTransport.ConnectionState.DISCONNECTED -> "Disconnected" to ChipBad
+        }
+    }
+    IoniqCard(modifier = Modifier.fillMaxWidth()) {
+        Column(Modifier.fillMaxWidth()) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                StatusPill(
+                    text = pillText,
+                    color = pillColor,
+                    pulsing = state == ObdTransport.ConnectionState.CONNECTED && !isReconnecting
                 )
-                if (isReconnecting) {
-                    Spacer(Modifier.height(6.dp))
-                    LinearProgressIndicator(
-                        modifier = Modifier.fillMaxWidth(),
-                        color = ChipWarn,
-                        trackColor = ChipBg
-                    )
-                }
+                Spacer(Modifier.width(10.dp))
+                Text(
+                    when (state) {
+                        ObdTransport.ConnectionState.CONNECTED -> "OBD-II BUS STREAM"
+                        else -> "ADAPTER LINK"
+                    },
+                    style = MaterialTheme.typography.labelSmall,
+                    color = ChipNeutral,
+                    letterSpacing = 1.5.sp
+                )
+            }
+            if (isReconnecting) {
+                Spacer(Modifier.height(10.dp))
+                LinearProgressIndicator(
+                    modifier = Modifier.fillMaxWidth(),
+                    color = ChipWarn,
+                    trackColor = IoniqBorder
+                )
             }
         }
     }
@@ -126,7 +95,6 @@ fun PollStatusBanner(
     failCount: Int
 ) {
     if (status == VehicleRepository.PollStatus.POLLING) return
-    val bg: Color
     val accent: Color
     val icon: ImageVector
     val title: String
@@ -134,34 +102,31 @@ fun PollStatusBanner(
     when (status) {
         VehicleRepository.PollStatus.POLLING -> return
         VehicleRepository.PollStatus.VEHICLE_OFF -> {
-            bg = Color(0xFF2A2416); accent = ChipWarn; icon = Icons.Default.Power
+            accent = ChipWarn; icon = Icons.Default.Power
             title = "Vehicle asleep"
             subtitle = "Polling at reduced cadence · failures: $failCount"
         }
         VehicleRepository.PollStatus.ECU_UNREACHABLE -> {
-            bg = Color(0xFF2A1B1B); accent = ChipBad; icon = Icons.Default.LinkOff
+            accent = ChipBad; icon = Icons.Default.LinkOff
             title = "ECU unreachable"
             subtitle = "Retrying — no hard disconnect · failures: $failCount"
         }
     }
-    Card(
+    IoniqCard(
         modifier = Modifier.fillMaxWidth(),
-        colors = CardDefaults.cardColors(containerColor = bg),
-        shape = RoundedCornerShape(12.dp)
+        containerColor = IoniqSurfaceHigh,
+        borderColor = accent.copy(alpha = 0.4f)
     ) {
-        Row(
-            modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp).fillMaxWidth(),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
             Icon(
                 imageVector = icon,
                 contentDescription = null,
-                modifier = Modifier.size(24.dp),
+                modifier = Modifier.size(22.dp),
                 tint = accent
             )
-            Spacer(Modifier.width(10.dp))
+            Spacer(Modifier.width(12.dp))
             Column(Modifier.weight(1f)) {
-                Text(title, color = ChipValue, style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
+                Text(title, color = ChipValue, style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
                 Text(subtitle, color = accent.copy(alpha = 0.9f), style = MaterialTheme.typography.labelSmall)
             }
         }
@@ -170,7 +135,6 @@ fun PollStatusBanner(
 
 // ─────────────────────────── TelemetryDashboard ───────────────────────────
 
-@OptIn(ExperimentalLayoutApi::class)
 @Composable
 fun TelemetryDashboard(telemetry: VehicleTelemetry?) {
     if (telemetry == null) {
@@ -191,210 +155,153 @@ fun TelemetryDashboard(telemetry: VehicleTelemetry?) {
         verticalArrangement = Arrangement.spacedBy(16.dp),
         contentPadding = PaddingValues(bottom = 16.dp)
     ) {
-        // ── SOC hero card ──
+        // ── Hero: SOC ring + charging state ──
         item {
-            Card(
-                modifier = Modifier.fillMaxWidth(),
-                colors = CardDefaults.cardColors(containerColor = ChipBg),
-                shape = RoundedCornerShape(20.dp)
-            ) {
-                Column(modifier = Modifier.padding(24.dp), horizontalAlignment = Alignment.CenterHorizontally) {
-                    Text(
-                        "State of Charge",
-                        style = MaterialTheme.typography.labelMedium,
-                        color = ChipLabel
-                    )
-                    Text(
-                        "${telemetry.soc?.toInt() ?: 0}%",
-                        style = MaterialTheme.typography.displayLarge,
-                        fontWeight = FontWeight.Bold,
-                        color = socColor(telemetry.soc)
-                    )
-                    Spacer(Modifier.height(8.dp))
-                    // Charging state chip
+            IoniqCard(modifier = Modifier.fillMaxWidth()) {
+                Column(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalAlignment = Alignment.CenterHorizontally
+                ) {
+                    SocRing(soc = telemetry.soc, ringColor = socColor(telemetry.soc), size = 210)
+                    Spacer(Modifier.height(14.dp))
                     val (chipLabel, chipColor, chipIcon) = chargingChip(telemetry.chargingState)
-                    AssistChip(
-                        onClick = { },
-                        label = { Text(chipLabel, fontWeight = FontWeight.SemiBold) },
-                        leadingIcon = { Icon(chipIcon, contentDescription = null, modifier = Modifier.size(18.dp)) },
-                        colors = AssistChipDefaults.assistChipColors(
-                            containerColor = chipColor.copy(alpha = 0.15f),
-                            labelColor = chipColor,
-                            leadingIconContentColor = chipColor
-                        ),
-                        border = AssistChipDefaults.assistChipBorder(
-                            enabled = true,
-                            borderColor = chipColor.copy(alpha = 0.3f)
-                        )
-                    )
-                    // Timestamp
-                    Spacer(Modifier.height(8.dp))
+                    StatusPill(text = chipLabel, color = chipColor, icon = chipIcon)
+                    Spacer(Modifier.height(10.dp))
                     val timeFormat = SimpleDateFormat("HH:mm:ss", Locale.getDefault())
                     Text(
-                        "Updated ${timeFormat.format(Date(telemetry.timestamp))}",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = ChipLabel.copy(alpha = 0.6f)
+                        "UPDATED ${timeFormat.format(Date(telemetry.timestamp))}",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = ChipNeutral
                     )
                 }
             }
         }
 
-        // ── Chip grid: battery metrics ──
+        // ── Real-time vitals grid (2 columns) ──
+        item { SectionHeader("Real-Time Vitals") }
         item {
-            SectionLabel("Battery")
-            Spacer(Modifier.height(8.dp))
-            FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                TelemetryChip(
-                    icon = Icons.Default.Bolt,
-                    label = "Voltage",
-                    value = telemetry.batteryVoltage?.let { "%.1f V".format(it) } ?: "—",
-                    tint = ChipAccent
-                )
-                TelemetryChip(
-                    icon = Icons.Default.Speed,
-                    label = "Current",
-                    value = telemetry.batteryCurrent?.let { "%.1f A".format(it) } ?: "—",
-                    tint = ChipAccent
-                )
-                TelemetryChip(
-                    icon = Icons.Default.Power,
-                    label = "Power",
-                    value = telemetry.chargePower?.let { "%.1f kW".format(it) } ?: "—",
-                    tint = if ((telemetry.chargePower ?: 0f) > 0f) ChipGood else ChipNeutral
-                )
-            }
-        }
-
-        // ── Chip grid: temperatures ──
-        item {
-            SectionLabel("Temperature")
-            Spacer(Modifier.height(8.dp))
-            FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                TelemetryChip(
-                    icon = Icons.Default.Thermostat,
-                    label = "Battery",
-                    value = telemetry.batteryTempMax?.let { "%.0f °C".format(it) } ?: "—",
-                    tint = tempColor(telemetry.batteryTempMax)
-                )
-                TelemetryChip(
-                    icon = Icons.Default.Thermostat,
-                    label = "Inlet",
-                    value = telemetry.inletTemp?.let { "%.0f °C".format(it) } ?: "—",
-                    tint = tempColor(telemetry.inletTemp)
-                )
-                TelemetryChip(
-                    icon = Icons.Default.Thermostat,
-                    label = "Ambient",
-                    value = telemetry.ambientTemp?.let { "%.0f °C".format(it) } ?: "—",
-                    tint = ChipNeutral
-                )
-            }
-        }
-
-        // ── Chip row: cell voltages ──
-        item {
-            SectionLabel("Cell Voltages")
-            Spacer(Modifier.height(8.dp))
-            FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                TelemetryChip(
-                    icon = Icons.Default.Numbers,
-                    label = "Min",
-                    value = telemetry.cellVoltageMin?.let { "${it} mV" } ?: "—",
-                    tint = cellColor(telemetry.cellVoltageMin)
-                )
-                TelemetryChip(
-                    icon = Icons.Default.Numbers,
-                    label = "Max",
-                    value = telemetry.cellVoltageMax?.let { "${it} mV" } ?: "—",
-                    tint = cellColor(telemetry.cellVoltageMax)
-                )
-                // Cell delta chip
-                val min = telemetry.cellVoltageMin
-                val max = telemetry.cellVoltageMax
-                if (min != null && max != null) {
-                    val delta = max - min
-                    TelemetryChip(
-                        icon = Icons.Default.Warning,
-                        label = "Delta",
-                        value = "$delta mV",
-                        tint = if (delta < 50) ChipGood else if (delta < 100) ChipWarn else ChipBad
+            val v = telemetry.batteryVoltage
+            val a = telemetry.batteryCurrent
+            val kw = telemetry.chargePower
+            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                Row(horizontalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.fillMaxWidth()) {
+                    MetricTile(
+                        label = "Voltage", value = v?.let { "%.1f".format(it) } ?: "—", unit = "V",
+                        tint = ChipAccent, modifier = Modifier.weight(1f),
+                        fraction = v?.let { it / 420f }
+                    )
+                    MetricTile(
+                        label = "Current", value = a?.let { "%.1f".format(it) } ?: "—", unit = "A",
+                        tint = if ((a ?: 0f) >= 0f) ChipAccent else ChipGood, modifier = Modifier.weight(1f),
+                        fraction = a?.let { kotlin.math.abs(it) / 250f }
+                    )
+                }
+                Row(horizontalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.fillMaxWidth()) {
+                    MetricTile(
+                        label = "Power", value = kw?.let { "%.1f".format(it) } ?: "—", unit = "kW",
+                        tint = if ((kw ?: 0f) > 0f) ChipGood else ChipNeutral, modifier = Modifier.weight(1f),
+                        fraction = kw?.let { kotlin.math.abs(it) / 240f }
+                    )
+                    MetricTile(
+                        label = "Battery", value = telemetry.batteryTempMax?.let { "%.0f".format(it) } ?: "—", unit = "°C",
+                        tint = tempColor(telemetry.batteryTempMax), modifier = Modifier.weight(1f),
+                        fraction = telemetry.batteryTempMax?.let { (it + 20f) / 80f }
+                    )
+                }
+                Row(horizontalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.fillMaxWidth()) {
+                    MetricTile(
+                        label = "Inlet", value = telemetry.inletTemp?.let { "%.0f".format(it) } ?: "—", unit = "°C",
+                        tint = tempColor(telemetry.inletTemp), modifier = Modifier.weight(1f),
+                        fraction = telemetry.inletTemp?.let { (it + 20f) / 80f }
+                    )
+                    MetricTile(
+                        label = "Ambient", value = telemetry.ambientTemp?.let { "%.0f".format(it) } ?: "—", unit = "°C",
+                        tint = ChipNeutral, modifier = Modifier.weight(1f),
+                        fraction = telemetry.ambientTemp?.let { (it + 20f) / 60f }
                     )
                 }
             }
         }
 
-        // ── Chip row: energy totals ──
+        // ── Cell voltages + equilibrium ──
         item {
-            SectionLabel("Cumulative Energy")
-            Spacer(Modifier.height(8.dp))
-            FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                TelemetryChip(
-                    icon = Icons.Default.BatteryChargingFull,
-                    label = "Charged",
-                    value = telemetry.cumulativeEnergyCharged?.let { "%.1f kWh".format(it) } ?: "—",
-                    tint = ChipGood
-                )
-                TelemetryChip(
-                    icon = Icons.Default.ElectricBolt,
-                    label = "Discharged",
-                    value = telemetry.cumulativeEnergyDischarged?.let { "%.1f kWh".format(it) } ?: "—",
-                    tint = ChipWarn
-                )
+            val min = telemetry.cellVoltageMin
+            val max = telemetry.cellVoltageMax
+            val delta = if (min != null && max != null) max - min else null
+            SectionHeader("Cell Voltages") {
+                if (delta != null) {
+                    StatusPill(
+                        text = "$delta mV Δ ${if (delta < 50) "Healthy" else if (delta < 100) "Watch" else "Alert"}",
+                        color = if (delta < 50) ChipGood else if (delta < 100) ChipWarn else ChipBad
+                    )
+                }
+            }
+        }
+        item {
+            IoniqCard(modifier = Modifier.fillMaxWidth()) {
+                Column(Modifier.fillMaxWidth()) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Column {
+                            Text("MIN CELL", style = MaterialTheme.typography.labelSmall, color = ChipLabel, letterSpacing = 1.5.sp)
+                            Spacer(Modifier.height(4.dp))
+                            Text(
+                                fmtMv(telemetry.cellVoltageMin),
+                                fontFamily = JetBrainsMono, fontWeight = FontWeight.Bold, fontSize = 20.sp,
+                                color = cellColor(telemetry.cellVoltageMin)
+                            )
+                        }
+                        Column(horizontalAlignment = Alignment.End) {
+                            Text("MAX CELL", style = MaterialTheme.typography.labelSmall, color = ChipLabel, letterSpacing = 1.5.sp)
+                            Spacer(Modifier.height(4.dp))
+                            Text(
+                                fmtMv(telemetry.cellVoltageMax),
+                                fontFamily = JetBrainsMono, fontWeight = FontWeight.Bold, fontSize = 20.sp,
+                                color = cellColor(telemetry.cellVoltageMax)
+                            )
+                        }
+                    }
+                    Spacer(Modifier.height(14.dp))
+                    CellBalanceBar(minMv = telemetry.cellVoltageMin, maxMv = telemetry.cellVoltageMax)
+                    Spacer(Modifier.height(6.dp))
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Text(fmtMv(telemetry.cellVoltageMin), style = MaterialTheme.typography.labelSmall, color = ChipNeutral)
+                        Text(fmtMv(telemetry.cellVoltageMax), style = MaterialTheme.typography.labelSmall, color = ChipNeutral)
+                    }
+                }
+            }
+        }
+
+        // ── Cumulative energy ──
+        item { SectionHeader("Cumulative Energy") }
+        item {
+            val charged = telemetry.cumulativeEnergyCharged
+            val discharged = telemetry.cumulativeEnergyDischarged
+            val scale = maxOf(charged ?: 0f, discharged ?: 0f, 1f)
+            IoniqCard(modifier = Modifier.fillMaxWidth()) {
+                Column(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalArrangement = Arrangement.spacedBy(16.dp)
+                ) {
+                    EnergyRow(
+                        label = "Charged",
+                        value = fmtKwh(charged),
+                        tint = ChipGood,
+                        fraction = (charged ?: 0f) / scale
+                    )
+                    EnergyRow(
+                        label = "Discharged",
+                        value = fmtKwh(discharged),
+                        tint = ChipWarn,
+                        fraction = (discharged ?: 0f) / scale
+                    )
+                }
             }
         }
     }
-}
-
-// ─────────────────────────── Chip Widget ───────────────────────────
-
-@OptIn(ExperimentalLayoutApi::class)
-@Composable
-fun TelemetryChip(
-    icon: ImageVector,
-    label: String,
-    value: String,
-    tint: Color
-) {
-    Card(
-        colors = CardDefaults.cardColors(containerColor = ChipBg),
-        shape = RoundedCornerShape(12.dp)
-    ) {
-        Row(
-            modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            Icon(
-                imageVector = icon,
-                contentDescription = null,
-                modifier = Modifier.size(16.dp),
-                tint = tint
-            )
-            Spacer(Modifier.width(6.dp))
-            Column {
-                Text(
-                    label,
-                    style = MaterialTheme.typography.labelSmall,
-                    color = ChipLabel,
-                    fontSize = 10.sp
-                )
-                Text(
-                    value,
-                    style = MaterialTheme.typography.bodyMedium,
-                    fontWeight = FontWeight.Bold,
-                    color = ChipValue
-                )
-            }
-        }
-    }
-}
-
-@Composable
-fun SectionLabel(text: String) {
-    Text(
-        text.uppercase(),
-        style = MaterialTheme.typography.labelSmall,
-        fontWeight = FontWeight.Bold,
-        color = ChipLabel,
-        letterSpacing = 1.2.sp
-    )
 }

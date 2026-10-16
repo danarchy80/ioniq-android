@@ -3,6 +3,8 @@ package com.ioniq.ui.screens
 import android.bluetooth.BluetoothDevice
 import android.content.Intent
 import android.provider.Settings
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -22,8 +24,7 @@ import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Sync
 import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material3.Button
-import androidx.compose.material3.Card
-import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
@@ -36,47 +37,56 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import com.ioniq.ui.VehicleViewModel
+import com.ioniq.ui.theme.IoniqBg
+import com.ioniq.ui.theme.IoniqCrimson
+import com.ioniq.ui.theme.IoniqSurfaceHigh
+import com.ioniq.ui.theme.JetBrainsMono
 
 // ─────────────────────────── BluetoothSetupCard ───────────────────────────
 
 @Composable
 fun BluetoothSetupCard(onRequestPermissions: () -> Unit, context: android.content.Context) {
-    Card(
+    IoniqCard(
         modifier = Modifier.fillMaxWidth(),
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primaryContainer),
-        shape = RoundedCornerShape(16.dp)
+        borderColor = ChipAccent.copy(alpha = 0.35f)
     ) {
         Column(
-            modifier = Modifier.padding(20.dp),
+            modifier = Modifier.fillMaxWidth(),
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
             Icon(
                 imageVector = Icons.Default.Bluetooth,
                 contentDescription = null,
                 modifier = Modifier.size(48.dp),
-                tint = MaterialTheme.colorScheme.primary
+                tint = ChipAccent
             )
             Spacer(Modifier.height(12.dp))
             Text(
                 "Bluetooth Setup Required",
                 style = MaterialTheme.typography.titleLarge,
-                fontWeight = FontWeight.Bold
+                fontWeight = FontWeight.Bold,
+                color = ChipValue
             )
             Spacer(Modifier.height(8.dp))
             Text(
                 "Enable Bluetooth and grant permissions to scan for OBD-II adapters.",
                 style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.8f)
+                color = ChipLabel
             )
             Spacer(Modifier.height(20.dp))
-            Button(onClick = onRequestPermissions, modifier = Modifier.fillMaxWidth()) {
+            Button(
+                onClick = onRequestPermissions,
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(999.dp),
+                colors = ButtonDefaults.buttonColors(containerColor = ChipAccent, contentColor = IoniqBg)
+            ) {
                 Icon(Icons.Default.CheckCircle, contentDescription = null)
                 Spacer(Modifier.width(8.dp))
-                Text("Grant Permissions")
+                Text("Grant Permissions", fontWeight = FontWeight.Bold)
             }
             Spacer(Modifier.height(8.dp))
             OutlinedButton(
@@ -87,7 +97,8 @@ fun BluetoothSetupCard(onRequestPermissions: () -> Unit, context: android.conten
                         }
                     )
                 },
-                modifier = Modifier.fillMaxWidth()
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(999.dp)
             ) {
                 Icon(Icons.Default.Settings, contentDescription = null)
                 Spacer(Modifier.width(8.dp))
@@ -108,18 +119,19 @@ fun PairedDevicesSection(viewModel: VehicleViewModel) {
     LaunchedEffect(Unit) { viewModel.refreshPairedDevices() }
 
     Column {
-        Text(
-            "My Paired OBD Adapters",
-            style = MaterialTheme.typography.titleMedium,
-            fontWeight = FontWeight.Bold,
-            color = ChipValue
-        )
+        SectionHeader("My Paired OBD Adapters", trailing = {
+            Text(
+                "${paired.size} SAVED",
+                style = MaterialTheme.typography.labelSmall,
+                color = ChipNeutral
+            )
+        })
         Spacer(Modifier.height(12.dp))
 
         OutlinedButton(
             onClick = { viewModel.refreshPairedDevices() },
             modifier = Modifier.fillMaxWidth(),
-            shape = RoundedCornerShape(12.dp)
+            shape = RoundedCornerShape(999.dp)
         ) {
             Icon(Icons.Default.Sync, contentDescription = null, modifier = Modifier.size(18.dp))
             Spacer(Modifier.width(8.dp))
@@ -128,12 +140,8 @@ fun PairedDevicesSection(viewModel: VehicleViewModel) {
 
         if (paired.isEmpty()) {
             Spacer(Modifier.height(12.dp))
-            Card(
-                modifier = Modifier.fillMaxWidth(),
-                colors = CardDefaults.cardColors(containerColor = ChipBg),
-                shape = RoundedCornerShape(12.dp)
-            ) {
-                Column(modifier = Modifier.padding(16.dp)) {
+            IoniqCard(modifier = Modifier.fillMaxWidth()) {
+                Column(modifier = Modifier.fillMaxWidth()) {
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Icon(Icons.Default.Info, contentDescription = null, tint = ChipAccent)
                         Spacer(Modifier.width(8.dp))
@@ -159,7 +167,8 @@ fun PairedDevicesSection(viewModel: VehicleViewModel) {
                                 }
                             )
                         },
-                        modifier = Modifier.fillMaxWidth()
+                        modifier = Modifier.fillMaxWidth(),
+                        shape = RoundedCornerShape(999.dp)
                     ) {
                         Icon(Icons.Default.Settings, contentDescription = null, modifier = Modifier.size(18.dp))
                         Spacer(Modifier.width(8.dp))
@@ -170,12 +179,6 @@ fun PairedDevicesSection(viewModel: VehicleViewModel) {
             return@Column
         }
 
-        Spacer(Modifier.height(8.dp))
-        Text(
-            "${paired.size} paired device${if (paired.size != 1) "s" else ""}:",
-            style = MaterialTheme.typography.bodySmall,
-            color = ChipLabel
-        )
         Spacer(Modifier.height(8.dp))
         paired.forEach { device ->
             PairedDeviceListItem(device) { viewModel.connect(device) }
@@ -191,16 +194,13 @@ fun PairedDeviceListItem(device: BluetoothDevice, onConnect: () -> Unit) {
     } else BluetoothDevice.BOND_NONE
     val isBonded = bondState == BluetoothDevice.BOND_BONDED
 
-    Card(
-        modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp),
-        onClick = onConnect,
-        colors = CardDefaults.cardColors(containerColor = ChipBg),
-        shape = RoundedCornerShape(12.dp)
+    IoniqCard(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(vertical = 5.dp)
+            .clickable(onClick = onConnect)
     ) {
-        Row(
-            modifier = Modifier.padding(16.dp).fillMaxWidth(),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
             Icon(
                 if (isBonded) Icons.Default.CheckCircle else Icons.Default.Bluetooth,
                 contentDescription = null,
@@ -217,18 +217,18 @@ fun PairedDeviceListItem(device: BluetoothDevice, onConnect: () -> Unit) {
                 )
                 Text(
                     device.address,
-                    style = MaterialTheme.typography.bodySmall,
-                    color = ChipLabel,
-                    fontFamily = FontFamily.Monospace
+                    style = MaterialTheme.typography.labelSmall,
+                    color = ChipNeutral,
+                    fontFamily = JetBrainsMono
                 )
             }
-            Text("Connect", color = ChipAccent, fontWeight = FontWeight.SemiBold)
+            StatusPill(text = "Reconnect", color = if (isBonded) ChipGood else ChipAccent)
             Spacer(Modifier.width(4.dp))
             Icon(
                 Icons.AutoMirrored.Filled.ArrowForward,
                 contentDescription = "Connect",
                 tint = ChipAccent,
-                modifier = Modifier.size(20.dp)
+                modifier = Modifier.size(18.dp)
             )
         }
     }
@@ -243,36 +243,43 @@ fun ScannerSection(
     scanError: String?
 ) {
     Column {
-        Text(
-            "Bluetooth Scanner",
-            style = MaterialTheme.typography.titleMedium,
-            fontWeight = FontWeight.Bold,
-            color = ChipValue
-        )
-        Spacer(Modifier.height(12.dp))
-
-        Button(
-            onClick = { viewModel.startScan() },
-            modifier = Modifier.fillMaxWidth(),
-            shape = RoundedCornerShape(12.dp)
-        ) {
-            Icon(Icons.Default.Search, contentDescription = null, modifier = Modifier.size(18.dp))
-            Spacer(Modifier.width(8.dp))
-            Text("Scan for OBD-II Adapters")
+        // Radar hero
+        IoniqCard(modifier = Modifier.fillMaxWidth()) {
+            Column(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalAlignment = Alignment.CenterHorizontally
+            ) {
+                RadarSweep(size = 200)
+                Spacer(Modifier.height(10.dp))
+                Text(
+                    if (devices.isEmpty()) "SCANNING FOR OBD-II ADAPTERS…" else "SCAN COMPLETE",
+                    style = MaterialTheme.typography.labelMedium,
+                    color = ChipLabel,
+                    letterSpacing = 2.sp
+                )
+                Spacer(Modifier.height(14.dp))
+                Button(
+                    onClick = { viewModel.startScan() },
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(999.dp),
+                    colors = ButtonDefaults.buttonColors(containerColor = ChipAccent, contentColor = IoniqBg)
+                ) {
+                    Icon(Icons.Default.Search, contentDescription = null, modifier = Modifier.size(18.dp))
+                    Spacer(Modifier.width(8.dp))
+                    Text("Scan for OBD-II Adapters", fontWeight = FontWeight.Bold)
+                }
+            }
         }
 
         // Error banner
         if (scanError != null) {
             Spacer(Modifier.height(12.dp))
-            Card(
+            IoniqCard(
                 modifier = Modifier.fillMaxWidth(),
-                colors = CardDefaults.cardColors(containerColor = Color(0xFF3E1C1C)),
-                shape = RoundedCornerShape(12.dp)
+                containerColor = IoniqSurfaceHigh,
+                borderColor = IoniqCrimson.copy(alpha = 0.4f)
             ) {
-                Row(
-                    modifier = Modifier.padding(12.dp),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
                     Icon(Icons.Default.Warning, contentDescription = null, tint = ChipBad)
                     Spacer(Modifier.width(8.dp))
                     Text(scanError, style = MaterialTheme.typography.bodySmall, color = ChipBad)
@@ -282,12 +289,14 @@ fun ScannerSection(
 
         // Device list
         if (devices.isNotEmpty()) {
-            Spacer(Modifier.height(12.dp))
-            Text(
-                "Found ${devices.size} device${if (devices.size != 1) "s" else ""}:",
-                style = MaterialTheme.typography.bodySmall,
-                color = ChipLabel
-            )
+            Spacer(Modifier.height(16.dp))
+            SectionHeader("Nearby Adapters", trailing = {
+                Text(
+                    "${devices.size} FOUND",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = ChipNeutral
+                )
+            })
             Spacer(Modifier.height(8.dp))
             devices.forEach { device ->
                 DeviceListItem(device) { viewModel.connect(device) }
@@ -298,16 +307,14 @@ fun ScannerSection(
 
 @Composable
 fun DeviceListItem(device: BluetoothDevice, onConnect: () -> Unit) {
-    Card(
-        modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp),
-        onClick = onConnect,
-        colors = CardDefaults.cardColors(containerColor = ChipBg),
-        shape = RoundedCornerShape(12.dp)
+    IoniqCard(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(vertical = 5.dp)
+            .clickable(onClick = onConnect),
+        borderColor = ChipAccent.copy(alpha = 0.25f)
     ) {
-        Row(
-            modifier = Modifier.padding(16.dp).fillMaxWidth(),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
             Icon(
                 Icons.Default.Bluetooth,
                 contentDescription = null,
@@ -324,16 +331,18 @@ fun DeviceListItem(device: BluetoothDevice, onConnect: () -> Unit) {
                 )
                 Text(
                     device.address,
-                    style = MaterialTheme.typography.bodySmall,
-                    color = ChipLabel,
-                    fontFamily = FontFamily.Monospace
+                    style = MaterialTheme.typography.labelSmall,
+                    color = ChipNeutral,
+                    fontFamily = JetBrainsMono
                 )
             }
+            StatusPill(text = "Connect", color = ChipAccent)
+            Spacer(Modifier.width(4.dp))
             Icon(
                 Icons.AutoMirrored.Filled.ArrowForward,
                 contentDescription = "Connect",
                 tint = ChipAccent,
-                modifier = Modifier.size(20.dp)
+                modifier = Modifier.size(18.dp)
             )
         }
     }

@@ -11,14 +11,14 @@ import com.ioniq.data.model.ChargingState
 
 // ─────────────────────────── Chip color tokens ───────────────────────────
 
-internal val ChipBg = Color(0xFF162235)
-internal val ChipLabel = Color(0xFF90A4AE)
-internal val ChipValue = Color(0xFFE0E0E0)
-internal val ChipGood = Color(0xFF4CAF50)
-internal val ChipWarn = Color(0xFFFFA726)
-internal val ChipBad = Color(0xFFEF5350)
+internal val ChipBg = Color(0xFF112240)
+internal val ChipLabel = Color(0xFF94A3B8)
+internal val ChipValue = Color(0xFFF1F5F9)
+internal val ChipGood = Color(0xFF10B981)
+internal val ChipWarn = Color(0xFFF59E0B)
+internal val ChipBad = Color(0xFFEF4444)
 internal val ChipAccent = Color(0xFF00B4E6)
-internal val ChipNeutral = Color(0xFF78909C)
+internal val ChipNeutral = Color(0xFF64748B)
 
 // ─────────────────────────── Format helpers ───────────────────────────
 
