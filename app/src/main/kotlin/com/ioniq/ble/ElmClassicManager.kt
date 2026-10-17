@@ -44,12 +44,14 @@ class ElmClassicManager(context: Context) : ObdTransport {
     private var autoReconnectEnabled = false
     private var targetDevice: BluetoothDevice? = null
     private var reconnectJob: Job? = null
-    private val maxReconnectAttempts = 15
+    private var connectionJob: Job? = null
+    private val maxReconnectAttempts = ObdTransport.MAX_RECONNECT_ATTEMPTS
     private val baseDelayMs = 2000L
     private val maxDelayMs = 30_000L
 
     // ---- Socket / streams ----
     private var socket: BluetoothSocket? = null
+    @Volatile private var pendingSocket: BluetoothSocket? = null
     private var input: InputStream? = null
     private var output: OutputStream? = null
     @Volatile private var running = false
@@ -75,9 +77,14 @@ class ElmClassicManager(context: Context) : ObdTransport {
         doConnect(device)
     }
 
-    private fun doConnect(device: BluetoothDevice) {
-        _connectionState.value = ConnectionState.CONNECTING
-        managerScope.launch {
+    private fun doConnect(device: BluetoothDevice, scheduleReconnectOnFailure: Boolean = true): Job {
+        val previousJob = connectionJob
+        closePendingSocket()
+        previousJob?.cancel()
+        val job = managerScope.launch {
+            previousJob?.join()
+            if (!isActive) return@launch
+            _connectionState.value = ConnectionState.CONNECTING
             try {
                 Timber.i("RFCOMM connecting to ${device.address} (timeout=${rfcConnectTimeoutMs}ms)...")
 
@@ -131,9 +138,15 @@ class ElmClassicManager(context: Context) : ObdTransport {
                                 bm.adapter?.cancelDiscovery()
                             } catch (_: Exception) {}
 
-                            sock.connect()
+                            connectSocket(sock)
                             connected = true
                             Timber.i("Primary RFCOMM connect succeeded on attempt $attempt")
+                        } catch (e: RfcommConnectTimeoutException) {
+                            try { sock.close() } catch (_: Exception) {}
+                            throw e
+                        } catch (e: CancellationException) {
+                            try { sock.close() } catch (_: Exception) {}
+                            throw e
                         } catch (e: Exception) {
                             Timber.w(e, "Primary RFCOMM connect attempt $attempt failed: ${e.message}")
                             try { sock.close() } catch (_: Exception) {}
@@ -160,9 +173,17 @@ class ElmClassicManager(context: Context) : ObdTransport {
                             } catch (_: Exception) {}
                             delay(200)
                             
-                            fallback.connect()
+                            connectSocket(fallback)
                             connected = true
                             Timber.i("Reflection fallback connect succeeded on channel $channel")
+                        } catch (e: RfcommConnectTimeoutException) {
+                            try { activeSocket?.close() } catch (_: Exception) {}
+                            activeSocket = null
+                            throw e
+                        } catch (e: CancellationException) {
+                            try { activeSocket?.close() } catch (_: Exception) {}
+                            activeSocket = null
+                            throw e
                         } catch (e: Exception) {
                             Timber.w(e, "Reflection fallback channel $channel failed: ${e.message}")
                             try { activeSocket?.close() } catch (_: Exception) {}
@@ -176,7 +197,7 @@ class ElmClassicManager(context: Context) : ObdTransport {
                     Timber.e("Suggestions: unpair/re-pair ${device.name ?: device.address}, power-cycle the OBD adapter, or check if another app holds the connection")
                     cleanupSocket()
                     _connectionState.value = ConnectionState.DISCONNECTED
-                    if (autoReconnectEnabled) startAutoReconnect()
+                    if (autoReconnectEnabled && scheduleReconnectOnFailure) startAutoReconnect()
                     return@launch
                 }
 
@@ -202,13 +223,41 @@ class ElmClassicManager(context: Context) : ObdTransport {
                     handleDisconnect("ELM init timeout")
                 }
 
-            } catch (e: Exception) {
-                Timber.e(e, "RFCOMM connection error")
+            } catch (e: CancellationException) {
+                closePendingSocket()
                 cleanupSocket()
                 _connectionState.value = ConnectionState.DISCONNECTED
-                if (autoReconnectEnabled) startAutoReconnect()
+                throw e
+            } catch (e: Exception) {
+                Timber.e(e, "RFCOMM connection error")
+                closePendingSocket()
+                cleanupSocket()
+                _connectionState.value = ConnectionState.DISCONNECTED
+                if (autoReconnectEnabled && scheduleReconnectOnFailure) startAutoReconnect()
             }
         }
+        connectionJob = job
+        return job
+    }
+
+    /** Connect with a socket-closing watchdog; coroutine cancellation alone cannot stop RFCOMM connect(). */
+    private suspend fun connectSocket(sock: BluetoothSocket) {
+        pendingSocket = sock
+        try {
+            connectWithSocketTimeout(
+                timeoutMs = rfcConnectTimeoutMs,
+                closeSocket = { runCatching { sock.close() } },
+                connect = { sock.connect() }
+            )
+        } finally {
+            if (pendingSocket === sock) pendingSocket = null
+        }
+    }
+
+    private fun closePendingSocket() {
+        val pending = pendingSocket
+        pendingSocket = null
+        runCatching { pending?.close() }
     }
 
     /**
@@ -308,6 +357,7 @@ class ElmClassicManager(context: Context) : ObdTransport {
     }
 
     private fun cleanupSocket() {
+        closePendingSocket()
         try { input?.close() } catch (_: Exception) {}
         try { output?.close() } catch (_: Exception) {}
         try { socket?.close() } catch (_: Exception) {}
@@ -323,6 +373,8 @@ class ElmClassicManager(context: Context) : ObdTransport {
     override fun disableAutoReconnect() {
         autoReconnectEnabled = false
         reconnectJob?.cancel()
+        connectionJob?.cancel()
+        closePendingSocket()
         _isReconnecting.value = false
     }
 
@@ -347,11 +399,9 @@ class ElmClassicManager(context: Context) : ObdTransport {
                 if (!autoReconnectEnabled || _connectionState.value == ConnectionState.CONNECTED) break
 
                 try {
-                    targetDevice?.let { doConnect(it) }
-                    val connected = withTimeoutOrNull(rfcConnectTimeoutMs) {
-                        connectionState.first { it == ConnectionState.CONNECTED }
-                    }
-                    if (connected != null) {
+                    val attemptJob = targetDevice?.let { doConnect(it, scheduleReconnectOnFailure = false) }
+                    attemptJob?.join()
+                    if (_connectionState.value == ConnectionState.CONNECTED) {
                         Timber.i("Reconnected on attempt $attempt")
                         _isReconnecting.value = false
                         return@launch
@@ -372,6 +422,8 @@ class ElmClassicManager(context: Context) : ObdTransport {
 
     override fun disconnect() {
         disableAutoReconnect()
+        connectionJob?.cancel()
+        closePendingSocket()
         running = false
         cleanupSocket()
         _connectionState.value = ConnectionState.DISCONNECTED
@@ -380,6 +432,8 @@ class ElmClassicManager(context: Context) : ObdTransport {
     override fun release() {
         disableAutoReconnect()
         reconnectJob?.cancel()
+        connectionJob?.cancel()
+        closePendingSocket()
         readJob?.cancel()
         running = false
         cleanupSocket()

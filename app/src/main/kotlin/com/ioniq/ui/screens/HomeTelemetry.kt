@@ -49,7 +49,7 @@ fun ConnectionStatusCard(
     attempts: Int
 ) {
     val (pillText, pillColor) = when {
-        isReconnecting -> "Reconnecting $attempts/5" to ChipWarn
+        isReconnecting -> "Reconnecting $attempts/${ObdTransport.MAX_RECONNECT_ATTEMPTS}" to ChipWarn
         else -> when (state) {
             ObdTransport.ConnectionState.CONNECTED -> "Live" to ChipGood
             ObdTransport.ConnectionState.CONNECTING -> "Connecting" to ChipWarn

@@ -11,6 +11,10 @@ interface ObdTransport {
 
     enum class ConnectionState { DISCONNECTED, CONNECTING, CONNECTED, DISCONNECTING }
 
+    companion object {
+        const val MAX_RECONNECT_ATTEMPTS = 5
+    }
+
     val connectionState: StateFlow<ConnectionState>
     val isReconnecting: StateFlow<Boolean>
     val reconnectCount: StateFlow<Int>

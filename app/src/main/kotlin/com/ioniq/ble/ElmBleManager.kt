@@ -37,7 +37,7 @@ class ElmBleManager(context: Context) : ObdTransport {
     // ---- Auto-reconnect config ----
     private var autoReconnectEnabled = false
     private var targetDevice: BluetoothDevice? = null
-    private val maxReconnectAttempts = 15
+    private val maxReconnectAttempts = ObdTransport.MAX_RECONNECT_ATTEMPTS
     private val baseDelayMs = 2000L
     private val maxDelayMs = 30_000L
 

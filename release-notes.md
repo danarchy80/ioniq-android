@@ -24,3 +24,12 @@ This release adds disk persistence to the log buffer so logs survive app crashes
 
 ### Downloads
 Install the APK on your Android device. Make sure to enable "Install from unknown sources" if not already enabled.
+
+## v1.0.0-beta.16 — Bluetooth connection retry fix
+
+- Enforce a per-attempt timeout for Classic Bluetooth RFCOMM connections by closing a socket that blocks during connect.
+- Serialize cancellation and reconnect attempts to prevent stale connection attempts from interfering with newer ones.
+- Align reconnect limits with the five attempts displayed in the UI.
+- Add unit coverage for blocked RFCOMM connects timing out and successful connects remaining open.
+
+Version code: 16.
