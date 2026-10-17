@@ -8,6 +8,7 @@ import kotlinx.coroutines.flow.*
 import java.io.InputStream
 import java.io.OutputStream
 import java.util.UUID
+import kotlinx.coroutines.sync.withLock
 import timber.log.Timber
 
 /**
@@ -58,8 +59,9 @@ class ElmClassicManager(context: Context) : ObdTransport {
 
     // ---- Incoming data accumulator (background reader) ----
     private val responseBuffer = StringBuilder()
-    @Volatile private var responseReady = false
     private val responseLock = Object()
+    private val commandMutex = kotlinx.coroutines.sync.Mutex()
+    private var pendingResponse: CompletableDeferred<String?>? = null
     private var readJob: Job? = null
 
     companion object {
@@ -282,13 +284,22 @@ class ElmClassicManager(context: Context) : ObdTransport {
                         break
                     }
                     val text = String(buf, 0, n, Charsets.UTF_8)
+                    var waiter: CompletableDeferred<String?>? = null
+                    var response: String? = null
                     synchronized(responseLock) {
                         responseBuffer.append(text)
                         if (text.contains(">")) {
-                            responseReady = true
-                            responseLock.notifyAll()
+                            response = responseBuffer.toString()
+                                .replace(">", "")
+                                .replace("\r", " ")
+                                .replace("\n", " ")
+                                .trim()
+                            waiter = pendingResponse
+                            pendingResponse = null
+                            responseBuffer.clear()
                         }
                     }
+                    waiter?.complete(response)
                 }
             } catch (e: Exception) {
                 if (running) {
@@ -299,49 +310,55 @@ class ElmClassicManager(context: Context) : ObdTransport {
         }
     }
 
-    override suspend fun sendCommand(command: String, timeoutMs: Long): String? {
-        return withContext(Dispatchers.IO) {
+    override suspend fun sendCommand(command: String, timeoutMs: Long): String? = commandMutex.withLock {
+        withContext(Dispatchers.IO) {
             val os = output ?: return@withContext null
+            val waiter = CompletableDeferred<String?>()
 
             synchronized(responseLock) {
-                responseReady = false
                 responseBuffer.clear()
+                pendingResponse?.complete(null)
+                pendingResponse = waiter
             }
 
             try {
                 os.write("$command\r".toByteArray())
                 os.flush()
             } catch (e: Exception) {
+                synchronized(responseLock) {
+                    if (pendingResponse === waiter) pendingResponse = null
+                }
+                waiter.complete(null)
                 Timber.w(e, "RFCOMM write failed for: $command")
                 return@withContext null
             }
 
-            val result = withTimeoutOrNull(timeoutMs) {
+            val result = try {
+                awaitRfcommResponse(waiter, timeoutMs)
+            } finally {
                 synchronized(responseLock) {
-                    while (!responseReady) {
-                        responseLock.wait(50)
-                    }
-                }
-                synchronized(responseLock) {
-                    responseBuffer.toString()
-                        .replace(">", "")
-                        .replace("\r", " ")
-                        .replace("\n", " ")
-                        .trim()
+                    if (pendingResponse === waiter) pendingResponse = null
                 }
             }
 
-            // Recovery flush: if the ELM is stuck mid-"Searching…" or otherwise
-            // unresponsive, send carriage returns to make it drop the current
-            // command and re-prompt. This is best-effort — ignore failures.
             if (result == null) {
-                runCatching {
-                    Timber.d("sendCommand timed out for '$command' — sending \\r\\r recovery flush")
-                    os.write("\r\r".toByteArray())
-                    os.flush()
-                    // Brief pause so incoming noise from the ELM draining is swallowed.
-                    kotlinx.coroutines.delay(150)
+                if (waiter.isCompleted) {
+                    Timber.w("RFCOMM command '$command' ended before a response (connection closed)")
+                } else {
+                    Timber.w("RFCOMM command '$command' timed out after ${timeoutMs}ms")
                 }
+
+                // Best-effort ELM recovery; don't write to a socket already closed by disconnect.
+                if (running) {
+                    runCatching {
+                        Timber.d("Sending recovery flush after '$command'")
+                        os.write("\r\r".toByteArray())
+                        os.flush()
+                        kotlinx.coroutines.delay(150)
+                    }
+                }
+            } else {
+                Timber.d("RFCOMM command '$command' response: '${result.take(120)}'")
             }
 
             result
@@ -357,6 +374,11 @@ class ElmClassicManager(context: Context) : ObdTransport {
     }
 
     private fun cleanupSocket() {
+        val pending = synchronized(responseLock) {
+            responseBuffer.clear()
+            pendingResponse.also { pendingResponse = null }
+        }
+        pending?.complete(null)
         closePendingSocket()
         try { input?.close() } catch (_: Exception) {}
         try { output?.close() } catch (_: Exception) {}
