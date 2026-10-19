@@ -33,3 +33,12 @@ Install the APK on your Android device. Make sure to enable "Install from unknow
 - Add unit coverage for blocked RFCOMM connects timing out and successful connects remaining open.
 
 Version code: 16.
+
+## v1.0.0-beta.17 — RFCOMM telemetry wait and diagnostics
+
+- Replace the blocking Classic Bluetooth response wait with a cancellable coroutine wait.
+- Wake any pending OBD command immediately when the RFCOMM socket disconnects.
+- Serialize Classic OBD commands and log individual command responses, timeouts, and disconnects to help diagnose missing telemetry.
+- Include regression tests for response delivery, disconnect, timeout, and cancellation.
+
+Version code: 17.
