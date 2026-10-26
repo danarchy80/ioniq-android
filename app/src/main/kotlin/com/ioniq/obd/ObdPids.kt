@@ -124,6 +124,15 @@ object ObdPids {
     const val HDR_CCS = "ATSH744"
     const val HDR_DEFAULT = "ATSH7DF"
 
+    // Additional ECU send-headers for the full GJSoft-derived DID map
+    // (see EcuConfig.kt / IoniqPids.kt).
+    const val HDR_VCU = "ATSH7E2"
+    const val HDR_MOTOR = "ATSH7E3"
+    const val HDR_HVAC = "ATSH7B3"
+    const val HDR_CLUSTER = "ATSH7C6"
+    const val HDR_BODY = "ATSH770"
+    const val HDR_ESC = "ATSH730"
+
     // NOTE: parseStandardOBD() and parseSoc() were removed — they were dead code
     // (never called). All OBD parsing flows through ObdParser.parseResponse() /
     // ObdParser.parseSoc() which use safe mapNotNull + runCatching for hex parsing.

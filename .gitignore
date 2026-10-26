@@ -7,3 +7,5 @@ local.properties
 .DS_Store
 .externalNativeBuild/
 .cxx/
+ioniq5_extracted/
+*.xapk

@@ -58,7 +58,60 @@ data class VehicleTelemetry(
     val dcChargeEnergyKwh: Long? = null,
 
     // ---- HV isolation (UDS DID 0101 @ 7E4) ----
-    val isolationResistanceKohm: Int? = null
+    val isolationResistanceKohm: Int? = null,
+
+    // ---- BMS Main (UDS DID 0101 @ 7E4) ----
+    val bmsSoc: Float? = null,                  // BMS SOC %
+    val bmsCurrent: Float? = null,              // A (negative = charging)
+    val bmsVoltage: Float? = null,              // V
+
+    // ---- BMS Status (UDS DID 0105 @ 7E4) ----
+    // (soh already declared above)
+    val maxChargePowerKw: Float? = null,        // kW
+    val maxDischargePowerKw: Float? = null,     // kW
+    val remainingEnergyKwh: Float? = null,      // kWh
+    val heaterStatus: Int? = null,              // raw heater status byte
+    val heaterPowerKw: Float? = null,           // kW
+
+    // ---- BMS charge stats (UDS DID 0106 @ 7E4) ----
+    val thermalMode: Int? = null,               // raw thermal management mode
+
+    // ---- VCU drive status (UDS DID 0101 @ 7E2) ----
+    val vcuSpeed: Float? = null,                // km/h
+    val vcuGear: Int? = null,                   // 0=P, 1=R, 2=N, 3=D
+    val vcuReady: Boolean? = null,              // ignition-ready state
+    val vcuTorqueOutput: Float? = null,         // Nm
+    val vcuMotorRpm: Int? = null,               // rpm
+
+    // ---- Motor / inverter (UDS DID 0101 @ 7E3) ----
+    val motorStatorTemp: Float? = null,         // °C
+    val motorInverterTemp: Float? = null,       // °C
+    val motorDcLinkVoltage: Float? = null,      // V
+    val motorDcLinkCurrent: Float? = null,      // A
+
+    // ---- HVAC (UDS DID 0100 @ 7B3) ----
+    val hvacCabinTemp: Float? = null,           // °C
+    val hvacOutsideTemp: Float? = null,         // °C
+    val hvacCompressorSpeed: Int? = null,       // RPM
+    val hvacCoolantIn: Float? = null,           // °C
+    val hvacCoolantOut: Float? = null,          // °C
+
+    // ---- Cluster (UDS DIDs B002 / B00C @ 7C6) ----
+    val clusterDisplaySpeed: Float? = null,     // km/h (displayed)
+    val clusterRange: Int? = null,              // km (displayed range)
+    val tripADistance: Float? = null,           // km
+    val tripBDistance: Float? = null,           // km
+
+    // ---- Body (UDS DID BC03 @ 770) ----
+    val doorDriverOpen: Boolean? = null,
+    val doorPassengerOpen: Boolean? = null,
+    val doorRearLeftOpen: Boolean? = null,
+    val doorRearRightOpen: Boolean? = null,
+    val hoodOpen: Boolean? = null,
+    val tailgateOpen: Boolean? = null,
+
+    // ---- Calibrated usable capacity (CapacityCalibrator) ----
+    val usableCapacityKwh: Float? = null        // kWh
 )
 
 enum class ChargingState {
