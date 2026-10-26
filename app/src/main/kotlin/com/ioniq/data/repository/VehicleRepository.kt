@@ -14,8 +14,14 @@ import com.ioniq.data.db.IoniqDatabase
 import com.ioniq.data.model.CellReading
 import com.ioniq.data.model.VehicleTelemetry
 import com.ioniq.ha.HomeAssistantClient
+import com.ioniq.obd.BmsParsers
+import com.ioniq.obd.IccuPids
+import com.ioniq.obd.IoniqPids
 import com.ioniq.obd.ObdParser
 import com.ioniq.obd.ObdPids
+import com.ioniq.obd.VehicleParsers
+import com.ioniq.util.CapacityCalibrator
+import com.ioniq.util.VinDecoder
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.*
 import timber.log.Timber
@@ -40,6 +46,12 @@ class VehicleRepository private constructor(private val context: Context) {
     private val db = IoniqDatabase.getDatabase(context)
     private val telemetryDao = db.telemetryDao()
     private val cellReadingDao = db.cellReadingDao()
+
+    // Plain prefs for per-VIN calibration state (IccuPids DID memory,
+    // CapacityCalibrator observations). VIN is detected once via DID F190.
+    private val prefs: SharedPreferences =
+        context.getSharedPreferences("vehicle_prefs", Context.MODE_PRIVATE)
+    private var vin: String? = null
 
     // ---- Active transport (BLE or classic RFCOMM) ----
     private var transport: ObdTransport? = null
@@ -311,7 +323,7 @@ class VehicleRepository private constructor(private val context: Context) {
                     if (slowTick % 15 == 0) {
                         val charging = chargingState == com.ioniq.data.model.ChargingState.CHARGING_AC ||
                             chargingState == com.ioniq.data.model.ChargingState.CHARGING_DC
-                        val uds = readUdsBlock(t, charging)
+                        val uds = readExtendedBlock(t, charging)
                         fullCells = uds.cells
                         aux = uds.aux
                         tpms = uds.tpms
@@ -362,7 +374,49 @@ class VehicleRepository private constructor(private val context: Context) {
                         dcChargeCount = udsRead.lifetime?.dcCount,
                         acChargeEnergyKwh = udsRead.lifetime?.acEnergyKwh,
                         dcChargeEnergyKwh = udsRead.lifetime?.dcEnergyKwh,
-                        isolationResistanceKohm = udsRead.isolationKohm
+                        isolationResistanceKohm = udsRead.isolationKohm,
+                        // BMS main (DID 0101 @ 7E4)
+                        bmsSoc = udsRead.bmsMain?.socBms,
+                        bmsCurrent = udsRead.bmsMain?.currentA,
+                        bmsVoltage = udsRead.bmsMain?.voltageV,
+                        // BMS status (DID 0105 @ 7E4)
+                        soh = udsRead.bmsStatus?.soh,
+                        maxChargePowerKw = udsRead.bmsStatus?.maxChargePowerKw,
+                        maxDischargePowerKw = udsRead.bmsStatus?.maxDischargePowerKw,
+                        remainingEnergyKwh = udsRead.bmsStatus?.remainingEnergyKwh,
+                        heaterStatus = udsRead.bmsStatus?.heaterStatus,
+                        heaterPowerKw = udsRead.bmsStatus?.heaterPowerKw,
+                        // VCU (DID 0101 @ 7E2)
+                        vcuSpeed = udsRead.vcu?.speedKmh,
+                        vcuGear = udsRead.vcu?.gear,
+                        vcuReady = udsRead.vcu?.ready,
+                        vcuTorqueOutput = udsRead.vcu?.torqueOutputNm,
+                        vcuMotorRpm = udsRead.vcu?.motorRpm,
+                        // Motor / inverter (DID 0101 @ 7E3)
+                        motorStatorTemp = udsRead.motor?.statorTempC,
+                        motorInverterTemp = udsRead.motor?.inverterTempC,
+                        motorDcLinkVoltage = udsRead.motor?.dcLinkVoltageV,
+                        motorDcLinkCurrent = udsRead.motor?.dcLinkCurrentA,
+                        // HVAC (DID 0100 @ 7B3)
+                        hvacCabinTemp = udsRead.hvac?.cabinTempC,
+                        hvacOutsideTemp = udsRead.hvac?.outsideTempC,
+                        hvacCompressorSpeed = udsRead.hvac?.compressorRpm,
+                        hvacCoolantIn = udsRead.hvac?.coolantInTempC,
+                        hvacCoolantOut = udsRead.hvac?.coolantOutTempC,
+                        // Cluster (DIDs B002 / B00C @ 7C6)
+                        clusterDisplaySpeed = udsRead.cluster?.displaySpeedKmh,
+                        clusterRange = udsRead.cluster?.rangeKm,
+                        tripADistance = udsRead.clusterTrips?.tripADistanceKm,
+                        tripBDistance = udsRead.clusterTrips?.tripBDistanceKm,
+                        // Body (DID BC03 @ 770)
+                        doorDriverOpen = udsRead.doors?.driverOpen,
+                        doorPassengerOpen = udsRead.doors?.passengerOpen,
+                        doorRearLeftOpen = udsRead.doors?.rearLeftOpen,
+                        doorRearRightOpen = udsRead.doors?.rearRightOpen,
+                        hoodOpen = udsRead.doors?.hoodOpen,
+                        tailgateOpen = udsRead.doors?.tailgateOpen,
+                        // Calibrated usable capacity (CapacityCalibrator)
+                        usableCapacityKwh = udsRead.usableCapacityKwh
                     )
 
                     // Detect unresponsive adapter: all critical PIDs returned null
@@ -455,45 +509,182 @@ class VehicleRepository private constructor(private val context: Context) {
         val evse: ObdParser.EvseInfo? = null,
         val targets: ObdParser.ChargeTargets? = null,
         val lifetime: ObdParser.LifetimeCharging? = null,
-        val isolationKohm: Int? = null
+        val isolationKohm: Int? = null,
+        // BMS main / status (DIDs 0101 / 0105 @ 7E4)
+        val bmsMain: BmsParsers.BmsMain? = null,
+        val bmsStatus: BmsParsers.BmsStatus? = null,
+        // Non-battery ECUs
+        val vcu: VehicleParsers.VcuStatus? = null,
+        val motor: VehicleParsers.MotorData? = null,
+        val hvac: VehicleParsers.HvacData? = null,
+        val cluster: VehicleParsers.ClusterData? = null,
+        val clusterTrips: VehicleParsers.ClusterTrips? = null,
+        val doors: VehicleParsers.DoorState? = null,
+        val esc: VehicleParsers.EscData? = null,
+        // Self-calibrated usable pack capacity (CapacityCalibrator)
+        val usableCapacityKwh: Float? = null
     )
 
     /**
-     * Reads the UDS DID block: 192 cell voltages + HV isolation + lifetime
-     * charge stats (BMS @ 7E4), 12V aux battery (LDC @ 7E5), TPMS (IPC @ 7A0),
-     * and — while charging — the charge-controller block (CCS @ 744).
+     * Reads the extended UDS DID block: BMS main/status + 192 cell voltages +
+     * HV isolation + lifetime charge stats (BMS @ 7E4), 12V aux battery with
+     * facelift DID detection (ICCU @ 7E5), TPMS (IPC @ 7A0), VCU (7E2),
+     * motor (7E3), HVAC (7B3), cluster (7C6), body doors (770, needs the
+     * extended diagnostic session), ESC dynamics (730), and — while charging —
+     * the charge-controller block (CCS @ 744). Also detects the VIN once
+     * (VCU DID F190) and feeds CapacityCalibrator.
+     *
      * Each ECU needs the ELM327 send header switched via ATSH first; the
      * default header is always restored in `finally` so the rapid poll keeps
      * working even if this block fails partway (cheap ELM clones can choke
-     * on header switches).
+     * on header switches). Per-ECU try/catch keeps one dead ECU from killing
+     * the whole block.
      */
-    private suspend fun readUdsBlock(t: ObdTransport, charging: Boolean): UdsRead {
+    private suspend fun readExtendedBlock(t: ObdTransport, charging: Boolean): UdsRead {
         var result = UdsRead()
         try {
-            // BMS @ 7E4: cells, isolation, lifetime stats
+            // ---- BMS @ 7E4: main + status + cells + isolation + lifetime ----
             t.sendCommand(ObdPids.HDR_BMS, timeoutMs = 2000)
+            val bmsMain = t.readPid(IoniqPids.Bms.MAIN)?.let { BmsParsers.parseMain(it) }
+            val bmsStatus = t.readPid(IoniqPids.Bms.STATUS)?.let { BmsParsers.parseStatus(it) }
             val blocks = listOf(
-                ObdPids.CELL_BLOCK_1, ObdPids.CELL_BLOCK_2, ObdPids.CELL_BLOCK_3,
-                ObdPids.CELL_BLOCK_4, ObdPids.CELL_BLOCK_5, ObdPids.CELL_BLOCK_6
+                IoniqPids.Bms.CELLS_1, IoniqPids.Bms.CELLS_2, IoniqPids.Bms.CELLS_3,
+                IoniqPids.Bms.CELLS_4, IoniqPids.Bms.CELLS_5, IoniqPids.Bms.CELLS_6
             ).mapNotNull { pid -> t.readPid(pid)?.let(ObdParser::parseCellBlock) }
             val cells = if (blocks.sumOf { it.size } >= 90) blocks.flatten() else null
             val isolation = t.readPid(ObdPids.HV_ISOLATION)?.let(ObdParser::parseIsolationResistance)
-            val lifetime = t.readPid(ObdPids.LIFETIME_CHARGING)?.let(ObdParser::parseLifetimeCharging)
-            result = result.copy(cells = cells, isolationKohm = isolation, lifetime = lifetime)
+            val lifetime = t.readPid(IoniqPids.Bms.LIFETIME)?.let(ObdParser::parseLifetimeCharging)
+            result = result.copy(
+                bmsMain = bmsMain, bmsStatus = bmsStatus,
+                cells = cells, isolationKohm = isolation, lifetime = lifetime
+            )
 
-            // LDC @ 7E5: 12V aux battery
+            // ---- VIN detection: once, after the first successful BMS read ----
+            if (vin == null && bmsMain != null) {
+                try {
+                    t.sendCommand(ObdPids.HDR_VCU, timeoutMs = 2000)
+                    val vinRaw = t.readPid("22F190")
+                    val decoded = VinDecoder.decode(ObdParser.extractVin(vinRaw))
+                    if (decoded != null && decoded.valid) {
+                        vin = decoded.vin
+                        Timber.i("VIN detected: ${decoded.vin}")
+                    }
+                } catch (e: TimeoutCancellationException) {
+                    Timber.d("VIN read timed out: ${e.message}")
+                } catch (e: kotlinx.coroutines.CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    Timber.d("VIN read failed: ${e.message}")
+                }
+            }
+
+            // ---- ICCU @ 7E5: 12V aux with facelift DID detection ----
             t.sendCommand(ObdPids.HDR_LDC, timeoutMs = 2000)
-            result = result.copy(
-                aux = t.readPid(ObdPids.AUX_BATTERY)?.let(ObdParser::parseAuxBattery)
-            )
+            var aux12v: ObdParser.AuxBattery? = null
+            for (did in IccuPids.candidates(prefs, vin)) {
+                val raw = t.readPid(did)
+                if (raw != null) {
+                    aux12v = ObdParser.parseAuxBattery(raw)
+                    if (aux12v != null) {
+                        IccuPids.noteSuccess(prefs, vin, did)
+                        break
+                    }
+                }
+            }
+            result = result.copy(aux = aux12v)
 
-            // IPC @ 7A0: TPMS
+            // ---- IPC @ 7A0: TPMS ----
             t.sendCommand(ObdPids.HDR_TPMS, timeoutMs = 2000)
-            result = result.copy(
-                tpms = t.readPid(ObdPids.TPMS)?.let(ObdParser::parseTpms)
-            )
+            result = result.copy(tpms = t.readPid(ObdPids.TPMS)?.let(ObdParser::parseTpms))
 
-            // CCS @ 744: charge session — only meaningful while plugged in
+            // ---- VCU @ 7E2: gear / ready / speed / torque / rpm ----
+            try {
+                t.sendCommand(ObdPids.HDR_VCU, timeoutMs = 2000)
+                result = result.copy(
+                    vcu = t.readPid(IoniqPids.Vcu.DRIVE_STATUS)?.let { VehicleParsers.parseVcu(it) }
+                )
+            } catch (e: TimeoutCancellationException) {
+                Timber.d("VCU read timed out: ${e.message}")
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                Timber.d("VCU read failed: ${e.message}")
+            }
+
+            // ---- Motor @ 7E3: stator/inverter temps, DC link ----
+            try {
+                t.sendCommand(ObdPids.HDR_MOTOR, timeoutMs = 2000)
+                result = result.copy(
+                    motor = t.readPid(IoniqPids.Motor.MOTOR_DATA)?.let { VehicleParsers.parseMotor(it) }
+                )
+            } catch (e: TimeoutCancellationException) {
+                Timber.d("Motor read timed out: ${e.message}")
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                Timber.d("Motor read failed: ${e.message}")
+            }
+
+            // ---- HVAC @ 7B3: climate ----
+            try {
+                t.sendCommand(ObdPids.HDR_HVAC, timeoutMs = 2000)
+                result = result.copy(
+                    hvac = t.readPid(IoniqPids.Hvac.CLIMATE)?.let { VehicleParsers.parseHvac(it) }
+                )
+            } catch (e: TimeoutCancellationException) {
+                Timber.d("HVAC read timed out: ${e.message}")
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                Timber.d("HVAC read failed: ${e.message}")
+            }
+
+            // ---- Cluster @ 7C6: displayed speed / range / trips ----
+            try {
+                t.sendCommand(ObdPids.HDR_CLUSTER, timeoutMs = 2000)
+                result = result.copy(
+                    cluster = t.readPid(IoniqPids.Cluster.MAIN)?.let { VehicleParsers.parseCluster(it) },
+                    clusterTrips = t.readPid(IoniqPids.Cluster.TRIPS)?.let { VehicleParsers.parseClusterTrips(it) }
+                )
+            } catch (e: TimeoutCancellationException) {
+                Timber.d("Cluster read timed out: ${e.message}")
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                Timber.d("Cluster read failed: ${e.message}")
+            }
+
+            // ---- Body @ 770: doors (needs extended diagnostic session 1003) ----
+            try {
+                t.sendCommand(ObdPids.HDR_BODY, timeoutMs = 2000)
+                t.sendCommand("1003", timeoutMs = 2000)
+                delay(300)
+                result = result.copy(
+                    doors = t.readPid(IoniqPids.Body.DOORS)?.let { VehicleParsers.parseDoors(it) }
+                )
+            } catch (e: TimeoutCancellationException) {
+                Timber.d("Body ECU read timed out: ${e.message}")
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                Timber.d("Body ECU read failed: ${e.message}")
+            }
+
+            // ---- ESC @ 730: wheel speeds / steering angle / accelerations ----
+            try {
+                t.sendCommand(ObdPids.HDR_ESC, timeoutMs = 2000)
+                result = result.copy(
+                    esc = t.readPid(IoniqPids.Esc.DYNAMICS)?.let { VehicleParsers.parseEsc(it) }
+                )
+            } catch (e: TimeoutCancellationException) {
+                Timber.d("ESC read timed out: ${e.message}")
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                Timber.d("ESC read failed: ${e.message}")
+            }
+
+            // ---- CCS @ 744: charge session — only meaningful while plugged in ----
             if (charging) {
                 t.sendCommand(ObdPids.HDR_CCS, timeoutMs = 2000)
                 result = result.copy(
@@ -502,12 +693,22 @@ class VehicleRepository private constructor(private val context: Context) {
                     targets = t.readPid(ObdPids.CHARGE_TARGETS)?.let(ObdParser::parseChargeTargets)
                 )
             }
+
+            // ---- Capacity calibrator: feed SOC + remaining energy (+ SOH) ----
+            val soc = bmsMain?.socBms ?: bmsStatus?.displayedSoc
+            val remaining = bmsStatus?.remainingEnergyKwh
+            val soh = bmsStatus?.soh
+            val currentVin = vin
+            if (soc != null && remaining != null && currentVin != null) {
+                val cap = CapacityCalibrator.observe(prefs, currentVin, soc, remaining, soh)
+                result = result.copy(usableCapacityKwh = cap)
+            }
         } catch (e: TimeoutCancellationException) {
-            Timber.w("UDS block timed out: ${e.message}")
+            Timber.w("Extended block timed out: ${e.message}")
         } catch (e: kotlinx.coroutines.CancellationException) {
             throw e
         } catch (e: Exception) {
-            Timber.w(e, "UDS block read failed")
+            Timber.w(e, "Extended block read failed")
         } finally {
             runCatching { t.sendCommand(ObdPids.HDR_DEFAULT, timeoutMs = 2000) }
         }

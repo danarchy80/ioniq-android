@@ -266,6 +266,16 @@ object ObdParser {
         )
     }
 
+    /**
+     * VIN from a UDS response (e.g. DID F190 @ 7E2): strips the 62 <DID>
+     * header, decodes payload bytes as ASCII, keeps only alphanumerics.
+     */
+    fun extractVin(raw: String?): String? {
+        val d = udsData(raw) ?: return null
+        val s = d.map { it.toChar() }.joinToString("").filter { it in 'A'..'Z' || it in '0'..'9' }
+        return s.takeIf { it.isNotEmpty() }
+    }
+
     /** Strip the 62 <DID hi> <DID lo> header, returning the payload bytes. */
     private fun udsData(raw: String?): List<Int>? {
         if (isBad(raw)) return null
